@@ -29,8 +29,8 @@ class ZMQClient(val serviceResolver: ServiceResolver,
                 val defaultPort: Int)
                (implicit val scheduler: Scheduler) extends ClientTransport {
 
-  def this(config: Config)(implicit inj: Injector) = this(
-    ServiceResolverInjector(config.getOptionString("resolver")),
+  def this(config: Config, inj: Injector) = this(
+    ServiceResolverInjector(config.getOptionString("resolver"))(inj),
     config.getOptionInt("zmq-io-threads").getOrElse(1),
     config.getOptionDuration("ask-timeout").getOrElse(60.seconds),
     config.getOptionDuration("keep-alive-timeout").getOrElse(60.seconds),

@@ -27,14 +27,16 @@ import scala.util.control.NonFatal
 
 class ZMQServer(
                  val port: Int,
+                 val interface: String,
                  val zmqIOThreadCount: Int,
                  val socketsPerServer: Int,
                  val maxSockets: Int,
                  val serverResponseTimeout: FiniteDuration // todo: rename
-               ) (implicit scheduler: Scheduler) extends ServerTransport {
+               )(implicit scheduler: Scheduler) extends ServerTransport {
 
-  def this(config: Config)(implicit inj: Injector) = this(
+  def this(config: Config, inj: Injector) = this(
     config.getOptionInt("port").getOrElse(10050),
+    config.getOptionString("interface").getOrElse("*"),
     config.getOptionInt("zmq-io-threads").getOrElse(1),
     config.getOptionInt("sockets-per-server").getOrElse(32),
     config.getOptionInt("max-sockets").getOrElse(16384),
@@ -59,7 +61,7 @@ class ZMQServer(
     serverCommandsPipe,
     serverCommandsQueue,
     processor, // handler
-    "*", //todo: read from config
+    interface,
     port
   )
 

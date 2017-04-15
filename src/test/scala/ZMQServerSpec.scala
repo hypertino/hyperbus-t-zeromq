@@ -28,6 +28,7 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
   "Server" should "handle command" in {
     val serverTransport = new ZMQServer(
       port,
+      "127.0.0.1",
       zmqIOThreadCount = 1,
       socketsPerServer = 32,
       maxSockets = 150,
@@ -60,6 +61,7 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
   "Server" should "handle multiple commands" in {
     val serverTransport = new ZMQServer(
       port,
+      "127.0.0.1",
       zmqIOThreadCount = 1,
       socketsPerServer = 32,
       maxSockets = 150,
