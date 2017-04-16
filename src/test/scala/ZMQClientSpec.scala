@@ -66,7 +66,7 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
     )
 
     val f = clientTransport.ask(MockRequest(MockBody("yey")), responseDeserializer).runAsync
-    f.failed.futureValue shouldBe a[GatewayTimeout[ErrorBody]]
+    f.failed.futureValue shouldBe a[GatewayTimeout[_]]
   }
 
   "ask" should "send request and return response" in {

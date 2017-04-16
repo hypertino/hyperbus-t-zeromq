@@ -9,26 +9,33 @@ import com.hypertino.hyperbus.serialization.{MessageReader, ResponseBaseDeserial
 import com.hypertino.hyperbus.transport.api.{ServiceEndpoint, ServiceResolver}
 import monix.eval.{Callback, Task}
 import monix.execution.Scheduler
+import monix.execution.atomic.AtomicLong
 import org.slf4j.LoggerFactory
 import org.zeromq.ZMQ
 import org.zeromq.ZMQ.{Context, Poller, Socket}
 
+import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 import scala.concurrent.duration.FiniteDuration
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 // todo: rename
+// todo: max out-queue size
 private[transport] class ZMQClientThread(context: Context,
                                          serviceResolver: ServiceResolver,
                                          protected val commandsPipe: Pipe,
                                          protected val commandsQueue: ConcurrentLinkedQueue[ZMQClientCommand],
                                          keepAliveTimeout: FiniteDuration,
-                                         maxSocketsPerServer: Int,
                                          defaultPort: Int)
                                         (implicit scheduler: Scheduler) extends ZMQThreadBase[ZMQClientCommand] {
 
-  val allocatedSockets = mutable.Map[(String, Int), Vector[SocketWithTtl]]()
+  // todo: rename
+  var allocatedSockets = mutable.Map[(String, Int), SocketWithTtl]()
+
+  // todo: rename
+  val expectingReplySockets = mutable.Map[Long, ExpectingReply]()
+
   val log = LoggerFactory.getLogger(getClass)
 
   val thread = new Thread(() ⇒ run(), "zmq-ask")
@@ -41,76 +48,88 @@ private[transport] class ZMQClientThread(context: Context,
     val commandsSource = commandsPipe.source()
     commandsSource.configureBlocking(false)
 
-    var expectingReplySockets = Vector.empty[SocketWithTtl]
     val expectingCommands = mutable.MutableList[ZMQClientCommand]()
     var waitTimeout = keepAliveTimeout.toMillis / 2
+    var requestId: Long = 0
 
     do {
-      val poller = context.poller(1 + expectingReplySockets.size)
+      val poller = context.poller(1 + allocatedSockets.size)
       poller.register(commandsSource, Poller.POLLIN)
-      expectingReplySockets.foreach(s ⇒ poller.register(s.socket, Poller.POLLIN))
+      allocatedSockets.foreach(s ⇒ poller.register(s._2.socket, Poller.POLLIN))
 
       if (poller.poll(waitTimeout) > 0) {
         if (poller.pollin(0)) { // consume new commands
           expectingCommands ++= fetchNewCommands(commandsSource)
         }
 
-        expectingReplySockets.zipWithIndex.foreach { case (e, i) ⇒
+        allocatedSockets.values.zipWithIndex.foreach { case (e, i) ⇒
           if (poller.pollin(i + 1)) {
-            val s = e.socket.recvStr()
-            Task.fork {
-              Task.fromTry {
-                Try {
-                  MessageReader.from(s, e.expectingReply.get.responseDeserializer) match {
-                    case NonFatal(error) ⇒ Failure(error)
-                    case other ⇒ Success(other)
+            // todo: handle & log if no full message was received
+            val requestId = e.socket.recv()
+            if (e.socket.hasReceiveMore) {
+              val nullFrame = e.socket.recv()
+              if (e.socket.hasReceiveMore) {
+                val message = e.socket.recvStr()
+                if (requestId != null && requestId.size == 8) {
+                  val lRequestId = java.nio.ByteBuffer.wrap(requestId).getLong
+                  // todo: move to function
+                  expectingReplySockets.get(lRequestId) match {
+                    case Some(expecting) ⇒
+                      expectingReplySockets.remove(lRequestId)
+                      Task.fork {
+                        Task.eval {
+                          e.updateTtl(keepAliveTimeout.toMillis)
+                          val result = Try {
+                            MessageReader.from(message, expecting.responseDeserializer) match {
+                              case NonFatal(error) ⇒ Failure(error)
+                              case other ⇒ Success(other)
+                            }
+                          }.flatten
+                          expecting.callback(result)
+                        }
+                      }.runAsync
+
+
+                    case None ⇒ // todo: log
                   }
-                }.flatten
+                }
               }
-            }.runOnComplete(e.expectingReply.get.callback)
-            e.clear()
+            }
           }
         }
       }
 
-      poller.unregister(commandsSource)
-
-      expectingReplySockets.filter(i ⇒ i.expectingReply.isDefined && i.expectingReply.get.isCommandExpired) foreach { e ⇒
-        val expectingReply = e.expectingReply.get
-        e.close()
+      expectingReplySockets.filter(i ⇒ i._2.isCommandExpired) foreach { e ⇒
+        expectingReplySockets.remove(e._1)
+        val expectingReply = e._2
         implicit val msx = MessagingContext(expectingReply.correlationId)
         expectingReply.callback(Failure(GatewayTimeout(ErrorBody("ask_timeout"))))
       }
 
-      val newlyexpectingReplySockets = expectingCommands.flatMap {
+      expectingCommands.foreach {
         case ask: ZMQClientAsk ⇒
-          allocateSocketAndSend(ask)
+          requestId += 1
+          allocateSocketAndSend(ask, requestId)
 
         case ZMQClientThreadStop ⇒
           shutdown = true
-          None
       }
-
       expectingCommands.clear()
-      closeAndRemoveExpiredSockets()
-      expectingReplySockets = expectingReplySockets.filterNot(i ⇒ i.isClosed || i.expectingReply.isEmpty) ++ newlyexpectingReplySockets
-
       waitTimeout = keepAliveTimeout.toMillis / 2
       val now = System.currentTimeMillis()
-      expectingReplySockets.map(_.expectingReply.get.commandTtl) ++ allocatedSockets.values.flatMap(_.map(_.ttl)) foreach { ttl ⇒
+      expectingReplySockets.map(_._2.commandTtl) foreach { ttl ⇒
         val delta = 100 + ttl - now
         waitTimeout = Math.max(Math.min(waitTimeout, delta), 100)
       }
     } while (!shutdown)
 
     allocatedSockets.foreach { case (_, v) ⇒
-      v.filter(_.expectingReply.isDefined).foreach { socket ⇒
-        socket.close()
-        socket.expectingReply.foreach { er ⇒
-          implicit val msx = MessagingContext(er.correlationId)
-          er.callback(Failure(ServiceUnavailable(ErrorBody("transport_shutdown"))))
-        }
-      }
+      v.socket.close()
+    }
+
+    expectingReplySockets.foreach { case (_, v) ⇒
+      implicit val msx = MessagingContext(v.correlationId)
+      v.callback(Failure(ServiceUnavailable(ErrorBody("transport_shutdown"))))
     }
   }
   catch {
@@ -120,99 +139,62 @@ private[transport] class ZMQClientThread(context: Context,
       e.printStackTrace()
   }
 
-  protected def allocateSocketAndSend(ask: ZMQClientAsk): Option[SocketWithTtl] = {
+  protected def allocateSocketAndSend(ask: ZMQClientAsk, requestId: Long): Unit = {
     val key = (ask.serviceEndpoint.hostname, ask.serviceEndpoint.port.getOrElse(defaultPort))
-    val v = allocatedSockets.getOrElse(key, Vector.empty[SocketWithTtl])
-    val free = v.find(_.expectingReply.isEmpty)
-    if (free.isEmpty && v.size >= maxSocketsPerServer) {
-      implicit val mcx = MessagingContext(ask.correlationId)
-      ask.callback(Failure(ServiceUnavailable(ErrorBody("ask_queue_is_full"))))
-      None
-    }
-    else {
-      try {
-        val socket = free.getOrElse {
-          val s = context.socket(ZMQ.REQ)
+    val socketTry: Try[Socket] = Try {
+      allocatedSockets.get(key) match {
+        case Some(allocated) ⇒
+          allocated.updateTtl(keepAliveTimeout.toMillis)
+          allocated.socket
+
+        case None ⇒
+          val s = context.socket(ZMQ.DEALER)
           s.connect(s"tcp://${ask.serviceEndpoint.hostname}:${ask.serviceEndpoint.port.getOrElse(defaultPort)}")
           val newSocket = new SocketWithTtl(
             s,
-            keepAliveTimeout.toMillis + System.currentTimeMillis()
+            AtomicLong(keepAliveTimeout.toMillis + System.currentTimeMillis())
           )
-          val newVector = allocatedSockets.getOrElse(key, Vector.empty) :+ newSocket
-          allocatedSockets += key → newVector
-          newSocket
-        }
+          allocatedSockets += key → newSocket
+          newSocket.socket
+      }
+    }
 
-        try {
-          socket.socket.send(ask.message)
-          val e = new SocketExpectingReply(socket, ask.serviceEndpoint, ask.responseDeserializer,
-            ask.ttl, ask.callback, ask.correlationId
-          )
-          socket.waitFor(e)
-          Some(socket)
-        }
-        catch {
-          case NonFatal(e) ⇒
-            socket.close()
-            throw e
-        }
-      }
-      catch {
-        case NonFatal(e) ⇒
-          implicit val mcx = MessagingContext(ask.correlationId)
-          ask.callback(Failure(ServiceUnavailable(ErrorBody(e.getMessage, Some(e.toString)))))
-          None
-      }
+    socketTry.map { socket ⇒
+      val aRequestId = java.nio.ByteBuffer.allocate(8)
+      aRequestId.putLong(requestId)
+      aRequestId.flip()
+      val e = new ExpectingReply(ask.responseDeserializer, ask.ttl, ask.callback, ask.correlationId)
+
+      socket.send(aRequestId.array(), ZMQ.SNDMORE)
+      socket.send(null: Array[Byte], ZMQ.SNDMORE)
+      socket.send(ask.message)
+
+      expectingReplySockets += requestId → e
+    } recover {
+      case NonFatal(e) ⇒
+        implicit val mcx = MessagingContext(ask.correlationId)
+        ask.callback(Failure(ServiceUnavailable(ErrorBody(e.getMessage, Some(e.toString)))))
     }
   }
 
-  protected def closeAndRemoveExpiredSockets(): Unit = {
-    allocatedSockets.foreach { case (se, v) ⇒
-      v.filter(i ⇒ !i.isClosed && i.isExpired).foreach(_.close())
-      val newVector = v.filterNot(_.isClosed)
-      if (v.size != newVector.size) {
-        allocatedSockets += se → newVector
-      }
-    }
-    allocatedSockets.retain((k,v) ⇒ v.nonEmpty)
-  }
 }
 
 private[transport] class SocketWithTtl(
                                val socket: Socket,
-                               val ttl: Long,
-                               private var _expectingReply: Option[SocketExpectingReply] = None,
-                               private var _isClosed: Boolean = false
-                               ) {
-  def isExpired: Boolean = ttl < System.currentTimeMillis()
-
-  def isClosed: Boolean = _isClosed
-
-  def expectingReply: Option[SocketExpectingReply] = _expectingReply
-
-  def waitFor(reply: SocketExpectingReply): Unit = {
-    _expectingReply = Some(reply)
+                               val ttl: AtomicLong) {
+  def updateTtl(keepAliveTimeout: Long): Unit = {
+    ttl.set(keepAliveTimeout + System.currentTimeMillis())
   }
 
-  def clear(): Unit = {
-    _expectingReply = None
-  }
-
-  def close(): Unit = {
-    socket.close()
-    _isClosed = true
-    clear()
-  }
+  def isExpired: Boolean = ttl.get < System.currentTimeMillis()
 }
 
 // todo: rename
-private[transport] class SocketExpectingReply(
-                                               val parent: SocketWithTtl,
-                                               val serviceEndpoint: ServiceEndpoint,
-                                               val responseDeserializer: ResponseBaseDeserializer,
-                                               val commandTtl: Long,
-                                               val callback: Callback[ResponseBase],
-                                               val correlationId: String
-                                             ) {
+private[transport] class ExpectingReply(
+                                         val responseDeserializer: ResponseBaseDeserializer,
+                                         val commandTtl: Long,
+                                         val callback: Callback[ResponseBase],
+                                         val correlationId: String
+                                       ) {
   def isCommandExpired: Boolean = commandTtl < System.currentTimeMillis()
 }

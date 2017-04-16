@@ -54,7 +54,6 @@ class ZMQClient(val serviceResolver: ServiceResolver,
     askPipe,
     askQueue,
     keepAliveTimeout,
-    maxSocketsPerServer,
     defaultPort
   )
 

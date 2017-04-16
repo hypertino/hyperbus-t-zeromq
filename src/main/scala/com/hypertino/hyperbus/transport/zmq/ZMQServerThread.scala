@@ -51,7 +51,7 @@ private[transport] class ZMQServerThread(context: Context,
         }
 
         if (poller.pollin(1)) {
-          // todo: log if no full message was received
+          // todo: handle & log if no full message was received
           val requestId = frontend.recv()
           if (frontend.hasReceiveMore) {
             val nullFrame = frontend.recv()
