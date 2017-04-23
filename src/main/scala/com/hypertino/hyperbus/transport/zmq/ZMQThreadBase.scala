@@ -27,8 +27,10 @@ trait ZMQThreadBase[C] {
       }
     } while(command.isDefined)
 
+    log.trace(s"Fetched $commandCount commands")
     val buffer = ByteBuffer.allocateDirect(commandCount + 100)
-    commandSource.read(buffer)
+    val read = commandSource.read(buffer)
+    log.trace(s"Total read: $read, ${buffer.limit()}")
     newCommands
   }
 }

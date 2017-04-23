@@ -30,7 +30,6 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
       port,
       "127.0.0.1",
       zmqIOThreadCount = 1,
-      socketsPerServer = 32,
       maxSockets = 150,
       serverResponseTimeout = 100.milliseconds
     )
@@ -47,9 +46,15 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
 
     val ctx = ZMQ.context(1)
     val clientSocket = ctx.socket(ZMQ.REQ)
+    //clientSocket.setIdentity("123".getBytes())
     clientSocket.connect(s"tcp://localhost:$port")
 
+    val ri = getRequestId(100500)
+    clientSocket.send(ri, ZMQ.SNDMORE)
     clientSocket.send(MockRequest(MockBody("yey Maga")).serializeToString)
+
+    val rr = clientSocket.recv()
+    rr.toSeq should equal(ri.toSeq)
     val result = MessageReader.from(clientSocket.recvStr(), responseDeserializer)
     result should equalResp(MockResponse(MockBody("agaM yey")))
 
@@ -63,7 +68,6 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
       port,
       "127.0.0.1",
       zmqIOThreadCount = 1,
-      socketsPerServer = 32,
       maxSockets = 150,
       serverResponseTimeout = 100.milliseconds
     )
@@ -85,12 +89,19 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
     val clientSocket2 = ctx.socket(ZMQ.REQ)
     clientSocket2.connect(s"tcp://localhost:$port")
 
+    val ri = getRequestId(100500)
+    clientSocket1.send(ri, ZMQ.SNDMORE)
     clientSocket1.send(MockRequest(MockBody("yey Maga")).serializeToString)
+    clientSocket2.send(ri, ZMQ.SNDMORE)
     clientSocket2.send(MockRequest(MockBody("yey Alla")).serializeToString)
 
+    val rr2 = clientSocket2.recv()
+    rr2.toSeq should equal(ri.toSeq)
     val result2 = MessageReader.from(clientSocket2.recvStr(), responseDeserializer)
     result2 should equalResp(MockResponse(MockBody("allA yey")))
 
+    val rr1 = clientSocket1.recv()
+    rr1.toSeq should equal(ri.toSeq)
     val result1 = MessageReader.from(clientSocket1.recvStr(), responseDeserializer)
     result1 should equalResp(MockResponse(MockBody("agaM yey")))
 
@@ -102,6 +113,13 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
 
   def equalReq(other: RequestBase): Matcher[RequestBase] = EqualsMessage[RequestBase](other)
   def equalResp(other: ResponseBase): Matcher[ResponseBase] = EqualsMessage[ResponseBase](other)
+
+  def getRequestId(requestId: Long): Array[Byte] = {
+    val aRequestId = java.nio.ByteBuffer.allocate(8)
+    aRequestId.putLong(requestId)
+    aRequestId.flip()
+    aRequestId.array()
+  }
 }
 
 case class EqualsMessage[M <: Message[_ <: Body,_ <: Headers]](a: M) extends Matcher[M] {

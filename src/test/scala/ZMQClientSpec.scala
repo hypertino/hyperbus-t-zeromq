@@ -58,9 +58,8 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
     val clientTransport = new ZMQClient(
       mockResolver,
       zmqIOThreadCount = 1,
-      askTimeout = 100.milliseconds,
+      askTimeout = 500.milliseconds,
       keepAliveTimeout = 10.seconds,
-      maxSocketsPerServer = 10,
       maxSockets = 150,
       defaultPort = port
     )
@@ -80,7 +79,6 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
       zmqIOThreadCount = 1,
       askTimeout = 5000.milliseconds,
       keepAliveTimeout = 10.seconds,
-      maxSocketsPerServer = 10,
       maxSockets = 150,
       defaultPort = port
     )
@@ -91,8 +89,11 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
 
     val f = clientTransport.ask(MockRequest(MockBody("yey")), responseDeserializer).runAsync
 
+    val requestId = repSocket.recv()
+    requestId.length should equal(8)
     val msg = MockRequest(repSocket.recvStr())
     msg.body.test should equal("yey")
+    repSocket.send(requestId, ZMQ.SNDMORE)
     repSocket.send(response.serializeToString)
     f.futureValue should equal(response)
 
@@ -112,7 +113,6 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
       zmqIOThreadCount = 1,
       askTimeout = 50000.milliseconds,
       keepAliveTimeout = 100.seconds,
-      maxSocketsPerServer = 10,
       maxSockets = 150,
       defaultPort = port
     )
@@ -124,13 +124,19 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
     val f = clientTransport.ask(MockRequest(MockBody("yey")), responseDeserializer).runAsync
     val f2 = clientTransport.ask(MockRequest(MockBody("Julia?")), responseDeserializer).runAsync
 
+    val requestId = repSocket.recv()
+    requestId.length should equal(8)
     val msg = MockRequest(repSocket.recvStr())
     msg.body.test should equal("yey")
+    repSocket.send(requestId, ZMQ.SNDMORE)
     repSocket.send(response.serializeToString)
     f.futureValue should equal(response)
 
+    val requestId2 = repSocket.recv()
+    requestId2.length should equal(8)
     val msg2 = MockRequest(repSocket.recvStr())
     msg2.body.test should equal("Julia?")
+    repSocket.send(requestId2, ZMQ.SNDMORE)
     repSocket.send(response2.serializeToString)
     f2.futureValue should equal(response2)
 

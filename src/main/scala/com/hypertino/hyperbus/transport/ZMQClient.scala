@@ -4,13 +4,12 @@ import java.nio.ByteBuffer
 import java.nio.channels.Pipe
 import java.util.concurrent.ConcurrentLinkedQueue
 
-import com.hypertino.hyperbus.IdGenerator
 import com.hypertino.hyperbus.model.{ErrorBody, MessagingContext, RequestBase, ResponseBase, ServiceUnavailable}
 import com.hypertino.hyperbus.serialization.ResponseBaseDeserializer
 import com.hypertino.hyperbus.transport.api.{ClientTransport, PublishResult, ServiceResolver}
 import com.hypertino.hyperbus.transport.zmq._
 import com.hypertino.hyperbus.util.ConfigUtils._
-import com.hypertino.hyperbus.util.{SchedulerInjector, ServiceResolverInjector}
+import com.hypertino.hyperbus.util.{SchedulerInjector, SeqGenerator, ServiceResolverInjector}
 import com.typesafe.config.Config
 import monix.eval.Task
 import monix.execution.Scheduler
@@ -24,7 +23,6 @@ class ZMQClient(val serviceResolver: ServiceResolver,
                 val zmqIOThreadCount: Int,
                 val askTimeout: FiniteDuration,
                 val keepAliveTimeout: FiniteDuration,
-                val maxSocketsPerServer: Int,
                 val maxSockets: Int,
                 val defaultPort: Int)
                (implicit val scheduler: Scheduler) extends ClientTransport {
@@ -34,7 +32,6 @@ class ZMQClient(val serviceResolver: ServiceResolver,
     config.getOptionInt("zmq-io-threads").getOrElse(1),
     config.getOptionDuration("ask-timeout").getOrElse(60.seconds),
     config.getOptionDuration("keep-alive-timeout").getOrElse(60.seconds),
-    config.getOptionInt("max-sockets-per-server").getOrElse(32),
     config.getOptionInt("max-sockets").getOrElse(16384),
     config.getOptionInt("default-port").getOrElse(10050)
   )(
@@ -54,14 +51,15 @@ class ZMQClient(val serviceResolver: ServiceResolver,
     askPipe,
     askQueue,
     keepAliveTimeout,
-    defaultPort
+    defaultPort,
+    maxSockets
   )
 
   override def ask(message: RequestBase, responseDeserializer: ResponseBaseDeserializer): Task[ResponseBase] = {
     serviceResolver.lookupService(message.headers.hri.serviceAddress).flatMap { serviceEndpoint ⇒
       Task.create[ResponseBase] { (_, callback) ⇒
         val askCommand = ZMQClientAsk(message.serializeToString,
-          message.headers.correlationId.getOrElse(IdGenerator.create()),
+          message.headers.correlationId.getOrElse(SeqGenerator.create()),
           responseDeserializer,
           serviceEndpoint,
           System.currentTimeMillis + askTimeout.toMillis,
