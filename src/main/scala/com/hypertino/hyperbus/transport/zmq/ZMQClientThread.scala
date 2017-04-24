@@ -50,10 +50,17 @@ private[transport] class ZMQClientThread(context: Context,
           callback: Callback[ResponseBase]
          ): Cancelable = {
 
-    val askCommand = new ZMQClientAsk(message, correlationId, responseDeserializer, serviceEndpoint, ttl, callback)
-    sendCommand(askCommand)
-    () => {
-      askCommand.cancel()
+    if (thread.isAlive) {
+      val askCommand = new ZMQClientAsk(message, correlationId, responseDeserializer, serviceEndpoint, ttl, callback)
+      sendCommand(askCommand)
+      () => {
+        askCommand.cancel()
+      }
+    }
+    else {
+      implicit val mcx = MessagingContext(correlationId)
+      callback(Failure(ServiceUnavailable(ErrorBody("transport_shutdown"))))
+      Cancelable.empty
     }
   }
 
@@ -124,16 +131,21 @@ private[transport] class ZMQClientThread(context: Context,
         // get new timeout
         waitTimeout = keepAliveTimeout.toMillis / 2
         val now = System.currentTimeMillis()
-        expectingReplyMap.values.flatten.map(_._2.commandTtl).foreach { ttl ⇒
-          val delta = 100 + ttl - now
-          waitTimeout = Math.max(Math.min(waitTimeout, delta), 100)
+        expectingReplyMap.foreach { case (_, v) ⇒
+          v.foreach { case (_, e) ⇒
+            val delta = 100 + e.commandTtl - now
+            waitTimeout = Math.max(Math.min(waitTimeout, delta), 100)
+          }
         }
+
       } while (!shutdown)
 
-      expectingReplyMap.values.flatten.foreach { case (_, v) ⇒
-        implicit val msx = MessagingContext(v.correlationId)
-        v.callback(Failure(ServiceUnavailable(ErrorBody("transport_shutdown"))))
-        v.socketWithTtl.release(log)
+      expectingReplyMap.foreach { case (_, v) ⇒
+        v.foreach { case (_, e) ⇒
+          implicit val msx = MessagingContext(e.correlationId)
+          e.callback(Failure(ServiceUnavailable(ErrorBody("transport_shutdown"))))
+          e.socketWithTtl.release(log)
+        }
       }
 
       actualClientSocketMap.values.foreach(_.release(log))
