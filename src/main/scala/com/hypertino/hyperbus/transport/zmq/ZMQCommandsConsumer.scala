@@ -7,7 +7,7 @@ import org.slf4j.Logger
 
 import scala.collection.mutable
 
-trait ZMQThreadBase[C] {
+trait ZMQCommandsConsumer[C] {
   protected def commandsPipe: Pipe
   protected def commandsQueue: ConcurrentLinkedQueue[C]
   protected def log: Logger
@@ -21,16 +21,32 @@ trait ZMQThreadBase[C] {
       command.foreach { c ⇒
         commandCount += 1
         newCommands += c
-        if (log.isTraceEnabled) {
-          log.trace(s"Got new command: $c")
-        }
       }
     } while(command.isDefined)
 
-    log.trace(s"Fetched $commandCount commands")
-    val buffer = ByteBuffer.allocateDirect(commandCount + 100)
-    val read = commandSource.read(buffer)
-    log.trace(s"Total read: $read, ${buffer.limit()}")
+    if (commandCount > 0) {
+      val buffer = ByteBuffer.allocateDirect(commandCount)
+      commandSource.read(buffer)
+    }
     newCommands
+  }
+}
+
+trait ZMQCommandsProducer[C] {
+  protected def commandsSink: Pipe.SinkChannel
+  protected def commandsQueue: ConcurrentLinkedQueue[C]
+  protected def log: Logger
+
+  protected def sendCommand(command: C): Unit = {
+    commandsQueue.add(command)
+    commandsSink.write(ByteBuffer.wrap(Array[Byte](0)))
+  }
+}
+
+trait CancelableCommand {
+  @volatile  private var _isCanceled: Boolean = false
+  def isCanceled: Boolean = _isCanceled
+  def cancel(): Unit = {
+    _isCanceled = true
   }
 }

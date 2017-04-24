@@ -21,7 +21,7 @@ private[transport] class ZMQServerThread(context: Context,
                                          port: Int,
                                          responseTimeout: FiniteDuration
                                         )
-                                        (implicit scheduler: Scheduler) extends ZMQThreadBase[ZMQServerCommand] {
+                                        (implicit scheduler: Scheduler) extends ZMQCommandsConsumer[ZMQServerCommand] {
 
   protected val log = LoggerFactory.getLogger(getClass)
 

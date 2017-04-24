@@ -9,13 +9,14 @@ import monix.eval.Callback
 sealed trait ZMQClientCommand
 case object ZMQClientThreadStop extends ZMQClientCommand
 
-case class ZMQClientAsk(message: String,
-                        correlationId: String,
-                        responseDeserializer: ResponseBaseDeserializer,
-                        serviceEndpoint: ServiceEndpoint,
-                        ttl: Long,
-                        callback: Callback[ResponseBase]
-                       ) extends ZMQClientCommand {
+class ZMQClientAsk(val message: String,
+                   val correlationId: String,
+                   val responseDeserializer: ResponseBaseDeserializer,
+                   val serviceEndpoint: ServiceEndpoint,
+                   val ttl: Long,
+                   val callback: Callback[ResponseBase]
+                  ) extends ZMQClientCommand with CancelableCommand {
   def isExpired: Boolean = ttlRemaining < 0
+
   def ttlRemaining: Long = ttl - System.currentTimeMillis()
 }

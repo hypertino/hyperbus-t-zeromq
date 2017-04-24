@@ -1,7 +1,6 @@
 package com.hypertino.hyperbus.transport
 
 import java.io.Reader
-import java.nio.ByteBuffer
 import java.nio.channels.Pipe
 import java.util.concurrent.ConcurrentLinkedQueue
 
@@ -14,7 +13,7 @@ import com.hypertino.hyperbus.transport.zmq._
 import com.hypertino.hyperbus.util.ConfigUtils._
 import com.hypertino.hyperbus.util.{CallbackTask, FuzzyIndex, HyperbusSubscription, SchedulerInjector}
 import com.typesafe.config.Config
-import monix.eval.{Callback, Task}
+import monix.eval.Task
 import monix.execution.Scheduler
 import monix.reactive.Observable
 import org.slf4j.LoggerFactory
@@ -31,8 +30,8 @@ class ZMQServer(
                  val interface: String,
                  val zmqIOThreadCount: Int,
                  val maxSockets: Int,
-                 val serverResponseTimeout: FiniteDuration // todo: rename
-               )(implicit scheduler: Scheduler) extends ServerTransport {
+                 val serverResponseTimeout: FiniteDuration
+               )(implicit scheduler: Scheduler) extends ServerTransport with ZMQCommandsProducer[ZMQServerCommand] {
 
   def this(config: Config, inj: Injector) = this(
     config.getOptionInt("port").getOrElse(10050),
@@ -44,23 +43,22 @@ class ZMQServer(
     SchedulerInjector(config.getOptionString("scheduler"))(inj)
   )
 
+  protected val log = LoggerFactory.getLogger(getClass)
   protected val context = ZMQ.context(zmqIOThreadCount)
   context.setMaxSockets(maxSockets)
 
   protected val serverCommandsPipe = Pipe.open()
-  protected val serverCommandsSink = serverCommandsPipe.sink()
-  serverCommandsSink.configureBlocking(false)
-  protected val serverCommandsQueue = new ConcurrentLinkedQueue[ZMQServerCommand]
+  protected val commandsSink = serverCommandsPipe.sink()
+  commandsSink.configureBlocking(false)
+  protected val commandsQueue = new ConcurrentLinkedQueue[ZMQServerCommand]
 
   protected val commandSubscriptions = new FuzzyIndex[CommandHyperbusSubscription]
   protected val subscriptions = TrieMap[HyperbusSubscription[_], Boolean]()
 
-  protected val log = LoggerFactory.getLogger(getClass)
-
   protected val serverCommandsThread = new ZMQServerThread(
     context,
     serverCommandsPipe,
-    serverCommandsQueue,
+    commandsQueue,
     processor, // handler
     interface,
     port,
@@ -80,10 +78,9 @@ class ZMQServer(
       commandSubscriptions.clear()
       subscriptions.foreach(_._1.off())
 
-      //sendServerCommand(ZMQServerThreadStop(duration)) // todo: back
-      serverCommandsQueue.add(ZMQServerThreadStop(10.seconds))
-      serverCommandsSink.write(ByteBuffer.wrap(Array[Byte](0)))
-      serverCommandsSink.close()
+      sendCommand(ZMQServerThreadStop(duration))
+
+      commandsSink.close()
       serverCommandsThread.join(duration.toMillis)
       // clearAndShutdownAskCommands() // if something came while were closing sink todo: cancel subscriptions?
       context.close()
@@ -91,45 +88,12 @@ class ZMQServer(
     }
   }
 
-  /*
-      //val t = Task.zip2(tPublish, callbackTask.task).map(_._2)
-      val t = callbackTask.task.memoize
-      t.runAsync
-      t.onErrorHandleWith {
-        case r: ResponseBase ⇒
-          Task.now(r)
-        case NonFatal(e) ⇒
-          // todo: log exception
-          log.error("Unhandled", e)
-          Task.now(InternalServerError(ErrorBody("unhandled", Some(e.toString))))
-      } map { r: ResponseBase ⇒
-        val str = try {
-          r.serializeToString
-        } catch {
-          case NonFatal(e) ⇒
-            log.error("Can't serialize", e)
-            null
-        }
-        if (str != null) {
-          sendServerCommand(ZMQServerResponse(request.clientId, request.replyId, str))
-        }
-      }
-
-  */
-
-//  protected def sendServerCommand(command: ZMQServerCommand): Unit = {
-//    serverCommandsQueue.add(command)
-//    serverCommandsSink.write(ByteBuffer.wrap(Array[Byte](0)))
-//    log.debug(s"Server command: $command, total count: ${serverCommandsQueue.size()}")
-//  }
-
-  def sendServerCommand(clientId: Array[Byte], replyId: Array[Byte], value: Any)(implicit mcx: MessagingContext): Unit = {
+  protected def sendServerCommand(clientId: Array[Byte], replyId: Array[Byte], value: Any)(implicit mcx: MessagingContext): Unit = {
     val str = value match {
       case r: ResponseBase ⇒ r.serializeToString
       case NonFatal(e) ⇒ InternalServerError(ErrorBody("unhandled", Some(e.toString))).serializeToString
     }
-    serverCommandsQueue.add(ZMQServerResponse(clientId, replyId, str))
-    serverCommandsSink.write(ByteBuffer.wrap(Array[Byte](0)))
+    sendCommand(ZMQServerResponse(clientId, replyId, str))
   }
 
   protected class CommandHyperbusSubscription(val requestMatcher: RequestMatcher,
@@ -164,11 +128,6 @@ class ZMQServer(
 
     deserializeTask.flatMap { case (subscription, r) ⇒
       implicit val message = r
-
-//      val cb: Callback[ResponseBase] = new Callback[ResponseBase] {
-//        override def onSuccess(value: ResponseBase): Unit = sendServerCommand(request.clientId, request.replyId, value)
-//        override def onError(ex: Throwable): Unit = sendServerCommand(request.clientId, request.replyId, ex)
-//      }
 
       val cb = CallbackTask[ResponseBase]
       val command = CommandEvent(message, cb)

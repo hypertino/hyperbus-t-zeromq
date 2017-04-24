@@ -8,8 +8,8 @@ import com.hypertino.hyperbus.serialization.{MessageReader, ResponseBaseDeserial
 import com.hypertino.hyperbus.transport.api.ServiceResolver
 import monix.eval.{Callback, Task}
 import monix.execution.Scheduler
-import monix.execution.atomic.AtomicLong
-import org.slf4j.LoggerFactory
+import monix.execution.atomic.{AtomicInt, AtomicLong}
+import org.slf4j.{Logger, LoggerFactory}
 import org.zeromq.ZMQ
 import org.zeromq.ZMQ.{Context, Poller, Socket}
 
@@ -18,22 +18,27 @@ import scala.concurrent.duration.FiniteDuration
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
-// todo: rename
-// todo: max out-queue size
+// todo: max out-queue size?
+// todo: subscribe to ServiceResolver
+
+// clientSocketMap needs to be hold until there is waiting replies
+// thread with reply callback
+
+
 private[transport] class ZMQClientThread(context: Context,
                                          serviceResolver: ServiceResolver,
                                          protected val commandsPipe: Pipe,
                                          protected val commandsQueue: ConcurrentLinkedQueue[ZMQClientCommand],
                                          keepAliveTimeout: FiniteDuration,
                                          defaultPort: Int,
-                                         maxSockets: Int)
-                                        (implicit scheduler: Scheduler) extends ZMQThreadBase[ZMQClientCommand] {
+                                         maxSockets: Int,
+                                         maxOutputQueueSize: Int
+                                        )
+                                        (implicit scheduler: Scheduler) extends ZMQCommandsConsumer[ZMQClientCommand] {
 
-  // todo: rename
-  var allocatedSockets = mutable.Map[(String, Int), SocketWithTtl]()
+  val actualClientSocketMap = mutable.Map[(String, Int), SocketWithTtl]()
 
-  // todo: rename
-  val expectingReplySockets = mutable.Map[Long, ExpectingReply]()
+  val expectingReplyMap = mutable.Map[Int, mutable.Map[Long, ExpectingReply]]()
 
   val log = LoggerFactory.getLogger(getClass)
 
@@ -54,97 +59,24 @@ private[transport] class ZMQClientThread(context: Context,
     val commandsIndex = poller.register(commandsSource, Poller.POLLIN)
 
     do {
-      // allocatedSockets.foreach(s ⇒ poller.register(s._2.socket, Poller.POLLIN))
       val ready = poller.poll(waitTimeout)
       if (ready > 0) {
-        val s = (0 to allocatedSockets.size).map { i ⇒
-          (poller.pollin(i),
-            poller.pollerr(i),
-            poller.pollout(i)
-          )
-        }.mkString
-        log.trace(s"Ready: $ready $s")
 
         if (poller.pollin(commandsIndex)) { // consume new commands
           expectingCommands ++= fetchNewCommands(commandsSource)
         }
-        else {
-          log.debug("no commands")
-        }
 
-        log.debug(s"allocated: ${allocatedSockets.size}. timeout: $waitTimeout")
-        allocatedSockets.values.foreach { e ⇒
-          log.debug(s"pollin: ${e.pollerIndex},${e.socket}")
-          if (poller.pollin(e.pollerIndex)) {
-            // todo: handle & log if no full message was received
-
-            while ((e.socket.getEvents & Poller.POLLIN) != 0) {
-              val nullFrame = e.socket.recv() // todo: check it's null
-              if (nullFrame.nonEmpty) {
-                log.warn("null frame is" + new String(nullFrame))
-              }
-              if (e.socket.hasReceiveMore) {
-                val requestId = e.socket.recv()
-                if (e.socket.hasReceiveMore) {
-                  val message = e.socket.recvStr()
-                  if (requestId != null && requestId.size == 8) {
-                    val lRequestId = java.nio.ByteBuffer.wrap(requestId).getLong
-                    log.debug(s"Incoming: $lRequestId Currently expecting: ${expectingReplySockets.size}. Poller index = ${e.pollerIndex}")
-
-                    // todo: move to function
-                    expectingReplySockets.get(lRequestId) match {
-                      case Some(expecting) ⇒
-                        log.debug(s"Removing: $lRequestId")
-                        expectingReplySockets.remove(lRequestId)
-                        Task.fork {
-                          Task.eval {
-                            e.updateTtl(keepAliveTimeout.toMillis)
-                            val result = Try {
-                              MessageReader.from(message, expecting.responseDeserializer) match {
-                                case NonFatal(error) ⇒ Failure(error)
-                                case other ⇒ Success(other)
-                              }
-                            }.flatten
-                            expecting.callback(result)
-                          }
-                        }.runAsync
-
-
-                      case None ⇒ // todo: log
-                        log.debug(s"444, not found for $lRequestId. Currently expecting: ${expectingReplySockets.size}, ${message}")
-
-                    }
-                  } else {
-                    log.warn("333")
-                  }
-                } else {
-                  log.warn("222")
-                }
-              }
-              else {
-                log.warn("111")
-              }
-            }
+        actualClientSocketMap.values.foreach { a ⇒
+          if (poller.pollin(a.pollerIndex)) {
+            consumeReply(a)
           }
         }
       }
 
-      expectingReplySockets.clone().filter(i ⇒ i._2.isCommandExpired) foreach { e ⇒
-        log.debug(s"Removing Xpred: ${e._1}")
-        expectingReplySockets.remove(e._1)
-        val expectingReply = e._2
-        implicit val msx = MessagingContext(expectingReply.correlationId)
-        expectingReply.callback(Failure(GatewayTimeout(ErrorBody("ask_timeout"))))
-      }
+      handleExpiredReplies()
+      handleExpiredSockets(poller)
 
-      allocatedSockets.clone().foreach { case (k, a) ⇒
-        if (a.isExpired) {
-          a.socket.close()
-          poller.unregister(a.socket)
-          allocatedSockets.remove(k)
-        }
-      }
-
+      // process new commands
       expectingCommands.foreach {
         case ask: ZMQClientAsk ⇒
           requestId += 1
@@ -154,65 +86,165 @@ private[transport] class ZMQClientThread(context: Context,
           shutdown = true
       }
       expectingCommands.clear()
+
+      // get new timeout
       waitTimeout = keepAliveTimeout.toMillis / 2
       val now = System.currentTimeMillis()
-      expectingReplySockets.map(_._2.commandTtl) foreach { ttl ⇒
+      expectingReplyMap.values.flatten.map(_._2.commandTtl).foreach { ttl ⇒
         val delta = 100 + ttl - now
         waitTimeout = Math.max(Math.min(waitTimeout, delta), 100)
       }
     } while (!shutdown)
 
-    allocatedSockets.foreach { case (_, v) ⇒
-      v.socket.close()
-        poller.unregister(v.socket)
-    }
-
-    expectingReplySockets.foreach { case (_, v) ⇒
+    expectingReplyMap.values.flatten.foreach { case (_, v) ⇒
       implicit val msx = MessagingContext(v.correlationId)
       v.callback(Failure(ServiceUnavailable(ErrorBody("transport_shutdown"))))
+      v.socketWithTtl.release(log)
     }
+
+    actualClientSocketMap.values.foreach(_.release(log))
   }
   catch {
     case NonFatal(e) ⇒
       log.error("Unhandled", e)
-      println(e)
       e.printStackTrace()
+  }
+
+  private def handleExpiredSockets(poller: Poller) = {
+    actualClientSocketMap.filter(_._2.isExpired).foreach { case (k, a) ⇒
+      a.release(log)
+      actualClientSocketMap.remove(k)
+    }
+  }
+
+  private def removeExpectingReply(replyId: Long, e: ExpectingReply): Unit = {
+    e.socketWithTtl.release(log)
+    expectingReplyMap.get(e.socketWithTtl.pollerIndex).foreach { map ⇒
+      if (log.isDebugEnabled) {
+        log.debug(s"Removing ${e.socketWithTtl.pollerIndex}/$replyId ${e.socketWithTtl.socket}")
+      }
+      map.remove(replyId)
+      if (map.isEmpty) {
+        expectingReplyMap.remove(e.socketWithTtl.pollerIndex)
+      }
+    }
+  }
+
+  private def handleExpiredReplies(): Unit = {
+    expectingReplyMap.values.flatten.filter(i ⇒ i._2.isCommandExpired).foreach { case (replyId, expectingReply) ⇒
+      removeExpectingReply(replyId, expectingReply)
+      implicit val msx = MessagingContext(expectingReply.correlationId)
+      expectingReply.callback(Failure(GatewayTimeout(ErrorBody("ask_timeout"))))
+    }
+  }
+
+  protected def callResponseHandler(pollerIndex: Int, replyId: Long, message: String) {
+    expectingReplyMap.get(pollerIndex).foreach { map ⇒
+      map.get(replyId).foreach { expecting ⇒
+        expecting.socketWithTtl.updateTtl(keepAliveTimeout.toMillis)
+        removeExpectingReply(replyId, expecting)
+
+        // todo: move this to separate thread
+        Task.fork {
+          Task.eval {
+            val result = Try {
+              MessageReader.from(message, expecting.responseDeserializer) match {
+                case NonFatal(error) ⇒ Failure(error)
+                case other ⇒ Success(other)
+              }
+            }.flatten
+            expecting.callback(result)
+          }
+        }.runAsync
+      }
+    }
+  }
+
+  protected def consumeReply(a: SocketWithTtl): Unit = {
+    while ((a.socket.getEvents & Poller.POLLIN) != 0) {
+      val nullFrame = a.socket.recv()
+      if (nullFrame.nonEmpty) {
+        var totalSkippedBytes: Int = nullFrame.length
+        if (log.isTraceEnabled) {
+          log.trace(s"Got ${new String(nullFrame)} instead of null frame")
+        }
+        while (a.socket.hasReceiveMore) {
+          val frame = a.socket.recv()
+          totalSkippedBytes += frame.length
+          if (log.isTraceEnabled) {
+            log.trace(s"Skipped frame: ${new String(frame)}")
+          }
+        }
+        log.warn(s"Got frame with ${nullFrame.size} bytes while expecting null frame from ${a.socket}. Ignored message with $totalSkippedBytes bytes.")
+
+      } else if (a.socket.hasReceiveMore) {
+        val requestId = a.socket.recv()
+        if (a.socket.hasReceiveMore) {
+          val message = a.socket.recvStr()
+          if (requestId != null && requestId.size == 8) {
+            val lRequestId = java.nio.ByteBuffer.wrap(requestId).getLong
+            callResponseHandler(a.pollerIndex, lRequestId, message)
+          }
+          else {
+            log.warn(s"Got frame ${requestId.size} bytes while expecting 8 bytes replyId frame from ${a.socket}.")
+          }
+        } else {
+          log.warn(s"Got frame ${requestId.size} bytes but didn't get the following frame with message body from ${a.socket}.")
+        }
+      } else {
+        log.warn(s"Got null frame but didn't get the following frame with replyId from ${a.socket}.")
+      }
+    }
   }
 
   protected def allocateSocketAndSend(ask: ZMQClientAsk, requestId: Long, poller: Poller): Unit = {
     val key = (ask.serviceEndpoint.hostname, ask.serviceEndpoint.port.getOrElse(defaultPort))
-    val socketTry: Try[Socket] = Try {
-      allocatedSockets.get(key) match {
-        case Some(allocated) ⇒
-          allocated.updateTtl(keepAliveTimeout.toMillis)
-          allocated.socket
+    val socketTry: Try[SocketWithTtl] = Try {
+      actualClientSocketMap.get(key) match {
+        case Some(a) ⇒
+          a.updateTtl(keepAliveTimeout.toMillis)
+          a
 
         case None ⇒
-          val s = context.socket(ZMQ.DEALER)
-          s.connect(s"tcp://${ask.serviceEndpoint.hostname}:${ask.serviceEndpoint.port.getOrElse(defaultPort)}")
-          val newSocket = new SocketWithTtl(
-            s,
+          val socket = context.socket(ZMQ.DEALER)
+          socket.connect(s"tcp://${ask.serviceEndpoint.hostname}:${ask.serviceEndpoint.port.getOrElse(defaultPort)}")
+          val a = new SocketWithTtl(
+            socket,
             AtomicLong(keepAliveTimeout.toMillis + System.currentTimeMillis()),
-            poller.register(s, Poller.POLLIN)
+            poller
           )
-          log.debug(s"Allocated new socket: ${newSocket.pollerIndex}, ${newSocket.socket}")
-          allocatedSockets += key → newSocket
-          newSocket.socket
+          if (log.isDebugEnabled) {
+            log.debug(s"Allocated new socket: ${a.socket}/${a.pollerIndex} to $key")
+          }
+          actualClientSocketMap += key → a
+          a
       }
     }
 
-    socketTry.map { socket ⇒
-      val aRequestId = java.nio.ByteBuffer.allocate(8)
-      aRequestId.putLong(requestId)
-      aRequestId.flip()
-      val e = new ExpectingReply(ask.responseDeserializer, ask.ttl, ask.callback, ask.correlationId)
+    socketTry.map { a ⇒
+      val map = expectingReplyMap.get(a.pollerIndex) match {
+        case Some(amap) ⇒ amap
+        case None ⇒
+          val newMap = mutable.Map[Long, ExpectingReply]()
+          expectingReplyMap.put(a.pollerIndex, newMap)
+          newMap
+      }
+      if (map.size >= maxOutputQueueSize) {
+        implicit val mcx = MessagingContext(ask.correlationId)
+        ask.callback(Failure(ServiceUnavailable(ErrorBody("output_queue_limit_reached", Some(s"Queue size limit to $key is reached ($maxOutputQueueSize)")))))
+      } else {
+        val aRequestId = java.nio.ByteBuffer.allocate(8)
+        aRequestId.putLong(requestId)
+        aRequestId.flip()
+        val e = new ExpectingReply(ask.responseDeserializer, ask.ttl, ask.callback, ask.correlationId, a)
 
-      socket.send(null: Array[Byte], ZMQ.SNDMORE)
-      socket.send(aRequestId.array(), ZMQ.SNDMORE)
-      socket.send(ask.message)
+        a.socket.send(null: Array[Byte], ZMQ.SNDMORE)
+        a.socket.send(aRequestId.array(), ZMQ.SNDMORE)
+        a.socket.send(ask.message)
 
-      log.trace(s"New expecting: $requestId, ${e.correlationId}")
-      expectingReplySockets += requestId → e
+        map += requestId → e
+        e.socketWithTtl.addRef()
+      }
     } recover {
       case NonFatal(e) ⇒
         implicit val mcx = MessagingContext(ask.correlationId)
@@ -225,12 +257,31 @@ private[transport] class ZMQClientThread(context: Context,
 private[transport] class SocketWithTtl(
                                         val socket: Socket,
                                         val ttl: AtomicLong,
-                                        val pollerIndex: Int) {
+                                        poller: Poller
+                                      ) {
+  private val refCounter = AtomicInt(1)
+  val pollerIndex: Int = poller.register(socket)
+
   def updateTtl(keepAliveTimeout: Long): Unit = {
     ttl.set(keepAliveTimeout + System.currentTimeMillis())
   }
 
   def isExpired: Boolean = ttl.get < System.currentTimeMillis()
+
+  def addRef(): Unit = refCounter.increment()
+
+  def release(log: Logger): Boolean = {
+    if (refCounter.decrementAndGet() <= 0) {
+      if (log.isDebugEnabled) {
+        log.debug(s"Closing socket $socket")
+      }
+      poller.unregister(socket)
+      socket.close()
+      false
+    } else {
+      true
+    }
+  }
 }
 
 // todo: rename
@@ -238,7 +289,8 @@ private[transport] class ExpectingReply(
                                          val responseDeserializer: ResponseBaseDeserializer,
                                          val commandTtl: Long,
                                          val callback: Callback[ResponseBase],
-                                         val correlationId: String
+                                         val correlationId: String,
+                                         val socketWithTtl: SocketWithTtl
                                        ) {
   def isCommandExpired: Boolean = commandTtl < System.currentTimeMillis()
 }

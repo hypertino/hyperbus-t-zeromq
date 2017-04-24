@@ -57,11 +57,12 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
     port += 1
     val clientTransport = new ZMQClient(
       mockResolver,
+      defaultPort = port,
       zmqIOThreadCount = 1,
       askTimeout = 500.milliseconds,
       keepAliveTimeout = 10.seconds,
       maxSockets = 150,
-      defaultPort = port
+      maxOutputQueueSize = 10
     )
 
     val f = clientTransport.ask(MockRequest(MockBody("yey")), responseDeserializer).runAsync
@@ -76,11 +77,12 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
 
     val clientTransport = new ZMQClient(
       mockResolver,
+      defaultPort = port,
       zmqIOThreadCount = 1,
       askTimeout = 5000.milliseconds,
       keepAliveTimeout = 10.seconds,
       maxSockets = 150,
-      defaultPort = port
+      maxOutputQueueSize = 10
     )
 
     val repSocket = ctx.socket(ZMQ.REP)
@@ -110,11 +112,12 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
 
     val clientTransport = new ZMQClient(
       mockResolver,
+      defaultPort = port,
       zmqIOThreadCount = 1,
       askTimeout = 50000.milliseconds,
       keepAliveTimeout = 100.seconds,
       maxSockets = 150,
-      defaultPort = port
+      maxOutputQueueSize = 10
     )
 
     val repSocket = ctx.socket(ZMQ.REP)
@@ -143,42 +146,4 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
     repSocket.close()
     ctx.close()
   }
-//
-//  "XXXask" should "YYY" in {
-//    port += 1
-//
-//    val ctx = ZMQ.context(1)
-//    val response = MockResponse(MockBody("got-you"))
-//
-//    val clientTransport = new ZMQClient(
-//      mockResolver,
-//      zmqIOThreadCount = 1,
-//      askTimeout = 5000.milliseconds,
-//      keepAliveTimeout = 10.seconds,
-//      maxSocketsPerServer = 10,
-//      maxSockets = 150,
-//      defaultPort = port
-//    )
-//
-//    val repSocket = ctx.socket(ZMQ.ROUTER)
-//    repSocket.setLinger(1000)
-//    repSocket.bind(s"tcp://*:$port")
-//
-//    val f = clientTransport.ask(MockRequest(MockBody("yey")), responseDeserializer).runAsync
-//
-//    val a1 = repSocket.recv()
-//    println(repSocket.hasReceiveMore)
-//    val a2 = repSocket.recv()
-//    println(repSocket.hasReceiveMore)
-//    val a3 = repSocket.recv()
-//    println(repSocket.hasReceiveMore)
-//
-//    val msg = MockRequest(repSocket.recvStr())
-//    msg.body.test should equal("yey")
-//    repSocket.send(response.serializeToString)
-//    f.futureValue should equal(response)
-//
-//    repSocket.close()
-//    ctx.close()
-//  }
 }

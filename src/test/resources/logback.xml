@@ -5,7 +5,7 @@
             <pattern>%highlight(%.-3level) %cyan(%d{HH:mm:ss.SSS}) %yellow(%-35.35logger) %highlight(%msg) %n</pattern>
         </encoder>
     </appender>
-    <root level="TRACE">
+    <root level="INFO">
         <appender-ref ref="stdout"/>
     </root>
 </configuration>
