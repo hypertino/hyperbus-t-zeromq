@@ -26,7 +26,7 @@ class ZMQClient(val serviceResolver: ServiceResolver,
                 val keepAliveTimeout: FiniteDuration,
                 val maxSockets: Int,
                 val maxOutputQueueSize: Int)
-               (implicit val scheduler: Scheduler) extends ClientTransport with ZMQCommandsProducer[ZMQClientCommand] {
+               (implicit val scheduler: Scheduler) extends ClientTransport {
 
   def this(config: Config, inj: Injector) = this(
     ServiceResolverInjector(config.getOptionString("resolver"))(inj),
@@ -44,15 +44,9 @@ class ZMQClient(val serviceResolver: ServiceResolver,
   protected val context = ZMQ.context(zmqIOThreadCount)
   context.setMaxSockets(maxSockets)
 
-  protected val askPipe = Pipe.open()
-  protected val commandsSink = askPipe.sink()
-  commandsSink.configureBlocking(false)
-  protected val commandsQueue = new ConcurrentLinkedQueue[ZMQClientCommand]
   protected val askThread = new ZMQClientThread(
     context,
     serviceResolver,
-    askPipe,
-    commandsQueue,
     keepAliveTimeout,
     defaultPort,
     maxSockets,
@@ -62,18 +56,13 @@ class ZMQClient(val serviceResolver: ServiceResolver,
   override def ask(message: RequestBase, responseDeserializer: ResponseBaseDeserializer): Task[ResponseBase] = {
     serviceResolver.lookupService(message.headers.hri.serviceAddress).flatMap { serviceEndpoint ⇒
       Task.create[ResponseBase] { (_, callback) ⇒
-        val askCommand = new ZMQClientAsk(message.serializeToString,
+        askThread.ask(message.serializeToString,
           message.headers.correlationId.getOrElse(SeqGenerator.create()),
           responseDeserializer,
           serviceEndpoint,
           System.currentTimeMillis + askTimeout.toMillis,
           callback
         )
-        sendCommand(askCommand)
-
-        () => {
-          askCommand.cancel()
-        }
       }
     }
   }
@@ -82,26 +71,9 @@ class ZMQClient(val serviceResolver: ServiceResolver,
 
   override def shutdown(duration: FiniteDuration): Task[Boolean] = {
     Task.eval {
-      clearAndShutdownAskCommands()
-      sendCommand(ZMQClientThreadStop)
-      commandsSink.close()
-      askThread.join(duration.toMillis)
-      clearAndShutdownAskCommands() // if something came while were closing sink
+      askThread.stop(duration.toMillis)
       context.close()
       true
     }
-  }
-
-  protected def clearAndShutdownAskCommands(): Unit = {
-    var cmd: ZMQClientCommand = null
-    do {
-      cmd = commandsQueue.poll()
-      cmd match {
-        case ask: ZMQClientAsk ⇒
-          implicit val mcx = MessagingContext(ask.correlationId)
-          ask.callback(Failure(ServiceUnavailable(ErrorBody("shutdown_requested"))))
-        case _ ⇒
-      }
-    } while (cmd != null)
   }
 }

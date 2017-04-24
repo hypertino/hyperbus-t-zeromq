@@ -66,17 +66,25 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
   }
 
   "Multiple servers" should "handle multiple clients commands" in {
-    val serverCount = 10
-    val clientCount = 100
-    val messageCount = 3000
+    manyToMany(15,20,3000)
+  }
 
+  "Multiple servers" should "handle single clients commands" in {
+    manyToMany(15,1,3000)
+  }
+
+  "Single server" should "handle multiple clients commands" in {
+    manyToMany(1,100,3000)
+  }
+
+  def manyToMany(serverCount: Int, clientCount: Int, messageCount: Int): Unit = {
     val servers = 0 until serverCount map { i ⇒
       val serverPort = i + port + 1
       new ZMQServer(
         serverPort,
         "127.0.0.1",
         zmqIOThreadCount = 1,
-        maxSockets = 10,
+        maxSockets = 20,
         serverResponseTimeout = 100.milliseconds
       )
     }
@@ -85,12 +93,12 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
       val server = servers(i % servers.size)
 
       new ZMQClient(
-        mockResolver,
+        CyclicResolver(servers.map(_.port)),
         defaultPort = server.port,
         zmqIOThreadCount = 1,
         askTimeout = 5000.milliseconds,
         keepAliveTimeout = 10.seconds,
-        maxSockets = 10,
+        maxSockets = 20,
         maxOutputQueueSize = 16384
       )
     }
@@ -123,7 +131,6 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
     Task.gatherUnordered(clients.map(_.shutdown(10.seconds))).runAsync.futureValue
     Task.gatherUnordered(servers.map(_.shutdown(10.seconds))).runAsync.futureValue
   }
-
   def equalReq(other: RequestBase): Matcher[RequestBase] = EqualsMessage[RequestBase](other)
   def equalResp(other: ResponseBase): Matcher[ResponseBase] = EqualsMessage[ResponseBase](other)
 }

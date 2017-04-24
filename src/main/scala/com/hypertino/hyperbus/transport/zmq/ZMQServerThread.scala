@@ -14,8 +14,6 @@ import scala.concurrent.duration.{FiniteDuration, _}
 import scala.util.control.NonFatal
 
 private[transport] class ZMQServerThread(context: Context,
-                                         protected val commandsPipe: Pipe,
-                                         protected val commandsQueue: ConcurrentLinkedQueue[ZMQServerCommand],
                                          processor: (ZMQServerRequest) ⇒ Task[Any],
                                          interface: String,
                                          port: Int,
@@ -25,15 +23,23 @@ private[transport] class ZMQServerThread(context: Context,
 
   protected val log = LoggerFactory.getLogger(getClass)
 
-  val thread = new Thread(() ⇒ run(), "zmq-commands")
+  private val thread = new Thread(() ⇒ run(), "zmq-commands")
   thread.start()
 
-  def join(millis: Long): Unit = thread.join(millis)
+  def reply(clientId: Array[Byte], replyId: Array[Byte], responseString: String): Unit = {
+    sendCommand(new ZMQServerResponse(clientId, replyId, responseString))
+  }
+
+  def stop(duration: FiniteDuration): Unit = {
+    sendCommand(new ZMQServerThreadStop(duration))
+    commandsSink.close()
+    thread.join(duration.toMillis)
+  }
 
   protected def run(): Unit = {
     try {
       val processorCommandQueue = new LinkedBlockingQueue[ZMQServerCommand]()
-      val processorThread = new Thread(() ⇒ runProcessor(processorCommandQueue), "zmq-commands-processor")
+      val processorThread = new Thread(() ⇒ runRequestProcessor(processorCommandQueue), "zmq-commands-processor")
       processorThread.start()
 
       var shutdown = false
@@ -41,15 +47,16 @@ private[transport] class ZMQServerThread(context: Context,
       commandsSource.configureBlocking(false)
 
       val expectingCommands = mutable.MutableList[ZMQServerCommand]()
-      var waitTimeout = 60000
+      val waitTimeout = 60000
 
-      val frontend = context.socket(ZMQ.ROUTER)
-      frontend.bind(s"tcp://$interface:$port") // todo: handle when port is busy
+      val socket = context.socket(ZMQ.ROUTER)
+      socket.bind(s"tcp://$interface:$port") // todo: handle when port is busy
+      log.info(s"Socket $socket bound to $interface:$port")
 
       var shutdownTimeout: FiniteDuration = 10.seconds
       val poller = context.poller(2)
       val commandsIndex = poller.register(commandsSource, Poller.POLLIN)
-      val frontendIndex = poller.register(frontend, Poller.POLLIN)
+      val frontendIndex = poller.register(socket, Poller.POLLIN)
 
       do {
         if (poller.poll(waitTimeout) > 0) {
@@ -58,55 +65,50 @@ private[transport] class ZMQServerThread(context: Context,
           }
 
           if (poller.pollin(frontendIndex)) {
-            // todo: handle & log if no full message was received
-            // todo: use zsocket.getsockopt(zmq.EVENTS) !!!!
-
-            while ((frontend.getEvents & Poller.POLLIN) != 0) {
-              val clientId = frontend.recv()
-              if (frontend.hasReceiveMore) {
-                val nullFrame = frontend.recv() // todo: test that this is a null frame
+            while ((socket.getEvents & Poller.POLLIN) != 0) {
+              val clientId = socket.recv()
+              if (socket.hasReceiveMore) {
+                val nullFrame = socket.recv()
                 if (nullFrame.nonEmpty) {
-                  log.warn("a null frame is" + new String(nullFrame))
-                }
-                if (frontend.hasReceiveMore) {
-                  val requestId = frontend.recv()
-                  if (frontend.hasReceiveMore) {
-                    val message = frontend.recvStr()
-                    processorCommandQueue.put(ZMQServerRequest(clientId, requestId, message))
-                    //processor(ZMQServerRequest(clientId, requestId, message)).timeout(responseTimeout).runAsync
+                  skipInvalidMessage("null frame", nullFrame, socket)
+                  // log.warn("a null frame is" + new String(nullFrame))
+                } else if (socket.hasReceiveMore) {
+                  val requestId = socket.recv()
+                  if (socket.hasReceiveMore) {
+                    val message = socket.recvStr()
+                    processorCommandQueue.put(new ZMQServerRequest(clientId, requestId, message))
                   } else {
-                    log.warn("a333")
+                    log.warn(s"Got requestId frame but didn't get the following frame with message from $clientId.")
                   }
                 } else {
-                  log.warn("a222")
+                  log.warn(s"Got null frame but didn't get the following frame with requestId from $clientId.")
                 }
               }
               else {
-                log.warn("a111")
+                log.warn(s"Got frame with clientId $clientId but no null frame from $socket.")
               }
             }
           }
         }
 
         expectingCommands.foreach {
-          case ZMQServerThreadStop(timeout) ⇒
-            processorCommandQueue.put(ZMQServerThreadStop(timeout))
-            shutdownTimeout = timeout
+          case stop: ZMQServerThreadStop ⇒
+            processorCommandQueue.put(stop)
+            shutdownTimeout = stop.timeout
             shutdown = true
 
           case response: ZMQServerResponse ⇒
-            frontend.send(response.clientId, ZMQ.SNDMORE)
-            frontend.send(null: Array[Byte], ZMQ.SNDMORE)
-            frontend.send(response.replyId, ZMQ.SNDMORE)
-            frontend.send(response.message)
+            socket.send(response.clientId, ZMQ.SNDMORE)
+            socket.send(null: Array[Byte], ZMQ.SNDMORE)
+            socket.send(response.replyId, ZMQ.SNDMORE)
+            socket.send(response.message)
         }
-        //val waitingResponse = waitingResponse
-
         expectingCommands.clear()
       } while (!shutdown)
 
-      frontend.setLinger(shutdownTimeout.toMillis)
-      frontend.close()
+      socket.setLinger(shutdownTimeout.toMillis)
+      socket.close()
+      log.info(s"Socket $socket is closed")
       processorThread.join(shutdownTimeout.toMillis)
     }
     catch {
@@ -115,14 +117,14 @@ private[transport] class ZMQServerThread(context: Context,
     }
   }
 
-  protected def runProcessor(commandsQueue: LinkedBlockingQueue[ZMQServerCommand]): Unit = {
+  protected def runRequestProcessor(commandsQueue: LinkedBlockingQueue[ZMQServerCommand]): Unit = {
     try {
       var shutdown = false
       while (!shutdown) {
         commandsQueue.take() match {
-          case ZMQServerThreadStop(timeout) ⇒ shutdown = true
-          case ZMQServerRequest(clientId, requestId, message) ⇒
-            processor(ZMQServerRequest(clientId, requestId, message)).timeout(responseTimeout).runAsync
+          case _: ZMQServerThreadStop ⇒ shutdown = true
+          case request: ZMQServerRequest ⇒
+            processor(request).timeout(responseTimeout).runAsync
         }
       }
     }
@@ -132,3 +134,17 @@ private[transport] class ZMQServerThread(context: Context,
     }
   }
 }
+
+private [zmq] sealed trait ZMQServerCommand
+private [zmq] class ZMQServerThreadStop(val timeout: FiniteDuration) extends ZMQServerCommand
+
+private [zmq] class ZMQServerResponse(
+                                       val clientId: Array[Byte],
+                                       val replyId: Array[Byte],
+                                       val message: String
+                                     ) extends ZMQServerCommand
+
+private [transport] class ZMQServerRequest(
+                                            val clientId: Array[Byte],
+                                            val replyId: Array[Byte],
+                                            val message: String) extends ZMQServerCommand

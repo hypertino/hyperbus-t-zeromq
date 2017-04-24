@@ -31,7 +31,7 @@ class ZMQServer(
                  val zmqIOThreadCount: Int,
                  val maxSockets: Int,
                  val serverResponseTimeout: FiniteDuration
-               )(implicit scheduler: Scheduler) extends ServerTransport with ZMQCommandsProducer[ZMQServerCommand] {
+               )(implicit scheduler: Scheduler) extends ServerTransport {
 
   def this(config: Config, inj: Injector) = this(
     config.getOptionInt("port").getOrElse(10050),
@@ -47,18 +47,11 @@ class ZMQServer(
   protected val context = ZMQ.context(zmqIOThreadCount)
   context.setMaxSockets(maxSockets)
 
-  protected val serverCommandsPipe = Pipe.open()
-  protected val commandsSink = serverCommandsPipe.sink()
-  commandsSink.configureBlocking(false)
-  protected val commandsQueue = new ConcurrentLinkedQueue[ZMQServerCommand]
-
   protected val commandSubscriptions = new FuzzyIndex[CommandHyperbusSubscription]
   protected val subscriptions = TrieMap[HyperbusSubscription[_], Boolean]()
 
   protected val serverCommandsThread = new ZMQServerThread(
     context,
-    serverCommandsPipe,
-    commandsQueue,
     processor, // handler
     interface,
     port,
@@ -77,23 +70,11 @@ class ZMQServer(
     Task.eval {
       commandSubscriptions.clear()
       subscriptions.foreach(_._1.off())
-
-      sendCommand(ZMQServerThreadStop(duration))
-
-      commandsSink.close()
-      serverCommandsThread.join(duration.toMillis)
-      // clearAndShutdownAskCommands() // if something came while were closing sink todo: cancel subscriptions?
+      serverCommandsThread.stop(duration)
+      // todo: cancel subscriptions?
       context.close()
       true
     }
-  }
-
-  protected def sendServerCommand(clientId: Array[Byte], replyId: Array[Byte], value: Any)(implicit mcx: MessagingContext): Unit = {
-    val str = value match {
-      case r: ResponseBase ⇒ r.serializeToString
-      case NonFatal(e) ⇒ InternalServerError(ErrorBody("unhandled", Some(e.toString))).serializeToString
-    }
-    sendCommand(ZMQServerResponse(clientId, replyId, str))
   }
 
   protected class CommandHyperbusSubscription(val requestMatcher: RequestMatcher,
@@ -134,7 +115,11 @@ class ZMQServer(
       val tPublish = subscription.publish(command)
 
       Task.gatherUnordered(List(cb.task, tPublish)).map(_.head).map { response ⇒
-        sendServerCommand(request.clientId, request.replyId, response)
+        val responseString = response match {
+          case r: ResponseBase ⇒ r.serializeToString
+          case NonFatal(e) ⇒ InternalServerError(ErrorBody("unhandled", Some(e.toString))).serializeToString
+        }
+        serverCommandsThread.reply(request.clientId, request.replyId, responseString)
       }
     }
   }

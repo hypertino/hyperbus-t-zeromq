@@ -7,6 +7,7 @@ import com.hypertino.hyperbus.serialization.{MessageReader, RequestDeserializer,
 import com.hypertino.hyperbus.transport.ZMQClient
 import com.hypertino.hyperbus.transport.api.{ServiceEndpoint, ServiceResolver}
 import monix.eval.Task
+import monix.execution.atomic.{AtomicInt, AtomicLong}
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.time.{Millis, Span}
 import org.scalatest.{FlatSpec, Matchers}
@@ -36,6 +37,17 @@ case class MockResolver(port: Option[Int]) extends ServiceResolver {
     new ServiceEndpoint {
       override def hostname: String = "localhost"
       override def port: Option[Int] = MockResolver.this.port
+    }
+  }
+}
+
+case class CyclicResolver(ports: IndexedSeq[Int]) extends ServiceResolver {
+  val current = AtomicInt(0)
+
+  override def lookupService(serviceName: String): Task[ServiceEndpoint] = Task.now {
+    new ServiceEndpoint {
+      override def hostname: String = "localhost"
+      override def port: Option[Int] = Some(ports(current.incrementAndGet() % ports.size))
     }
   }
 }

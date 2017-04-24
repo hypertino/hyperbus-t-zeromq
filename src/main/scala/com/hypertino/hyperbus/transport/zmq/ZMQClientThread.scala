@@ -1,13 +1,13 @@
 package com.hypertino.hyperbus.transport.zmq
 
 import java.nio.channels.Pipe
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.{ConcurrentLinkedQueue, LinkedBlockingQueue}
 
 import com.hypertino.hyperbus.model.{ErrorBody, GatewayTimeout, MessagingContext, ResponseBase, ServiceUnavailable}
 import com.hypertino.hyperbus.serialization.{MessageReader, ResponseBaseDeserializer}
-import com.hypertino.hyperbus.transport.api.ServiceResolver
+import com.hypertino.hyperbus.transport.api.{ServiceEndpoint, ServiceResolver}
 import monix.eval.{Callback, Task}
-import monix.execution.Scheduler
+import monix.execution.{Cancelable, Scheduler}
 import monix.execution.atomic.{AtomicInt, AtomicLong}
 import org.slf4j.{Logger, LoggerFactory}
 import org.zeromq.ZMQ
@@ -18,17 +18,11 @@ import scala.concurrent.duration.FiniteDuration
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
-// todo: max out-queue size?
 // todo: subscribe to ServiceResolver
-
-// clientSocketMap needs to be hold until there is waiting replies
-// thread with reply callback
-
+// todo: 1. test socket ttl expiration, 2. test maxOutputQueueSize limit
 
 private[transport] class ZMQClientThread(context: Context,
                                          serviceResolver: ServiceResolver,
-                                         protected val commandsPipe: Pipe,
-                                         protected val commandsQueue: ConcurrentLinkedQueue[ZMQClientCommand],
                                          keepAliveTimeout: FiniteDuration,
                                          defaultPort: Int,
                                          maxSockets: Int,
@@ -36,78 +30,122 @@ private[transport] class ZMQClientThread(context: Context,
                                         )
                                         (implicit scheduler: Scheduler) extends ZMQCommandsConsumer[ZMQClientCommand] {
 
-  val actualClientSocketMap = mutable.Map[(String, Int), SocketWithTtl]()
+  private val actualClientSocketMap = mutable.Map[(String, Int), SocketWithTtl]()
 
-  val expectingReplyMap = mutable.Map[Int, mutable.Map[Long, ExpectingReply]]()
+  private val expectingReplyMap = mutable.Map[Int, mutable.Map[Long, ExpectingReply]]()
 
-  val log = LoggerFactory.getLogger(getClass)
+  protected val log = LoggerFactory.getLogger(getClass)
 
-  val thread = new Thread(() ⇒ run(), "zmq-ask")
+  private val responseProcessorCommandQueue = new LinkedBlockingQueue[ZMQResponseProcessorCommand]()
+  private val responseProcessorThread = new Thread(() ⇒ runResponseProcessor(responseProcessorCommandQueue), "zmq-ask-processor")
+
+  private val thread = new Thread(() ⇒ run(), "zmq-ask")
   thread.start()
 
-  def join(millis: Long): Unit = thread.join(millis)
+  def ask(message: String,
+          correlationId: String,
+          responseDeserializer: ResponseBaseDeserializer,
+          serviceEndpoint: ServiceEndpoint,
+          ttl: Long,
+          callback: Callback[ResponseBase]
+         ): Cancelable = {
 
-  protected def run(): Unit = try {
-    var shutdown = false
-    val commandsSource = commandsPipe.source()
-    commandsSource.configureBlocking(false)
+    val askCommand = new ZMQClientAsk(message, correlationId, responseDeserializer, serviceEndpoint, ttl, callback)
+    sendCommand(askCommand)
+    () => {
+      askCommand.cancel()
+    }
+  }
 
-    val expectingCommands = mutable.MutableList[ZMQClientCommand]()
-    var waitTimeout = keepAliveTimeout.toMillis / 2
-    var requestId: Long = 0
-    val poller = context.poller(maxSockets)
-    val commandsIndex = poller.register(commandsSource, Poller.POLLIN)
+  def stop(millis: Long): Unit = {
+    clearAndShutdownAskCommands()
+    sendCommand(ZMQClientThreadStop)
+    thread.join(millis)
+    clearAndShutdownAskCommands() // second time if something comes while we're stopping
+    close()
+  }
 
+  protected def clearAndShutdownAskCommands(): Unit = {
+    var cmd: ZMQClientCommand = null
     do {
-      val ready = poller.poll(waitTimeout)
-      if (ready > 0) {
+      cmd = commandsQueue.poll()
+      cmd match {
+        case ask: ZMQClientAsk ⇒
+          implicit val mcx = MessagingContext(ask.correlationId)
+          ask.callback(Failure(ServiceUnavailable(ErrorBody("shutdown_requested"))))
+        case _ ⇒
+      }
+    } while (cmd != null)
+  }
 
-        if (poller.pollin(commandsIndex)) { // consume new commands
-          expectingCommands ++= fetchNewCommands(commandsSource)
-        }
+  protected def run(): Unit = {
+    try {
+      responseProcessorThread.start()
 
-        actualClientSocketMap.values.foreach { a ⇒
-          if (poller.pollin(a.pollerIndex)) {
-            consumeReply(a)
+      var shutdown = false
+      val commandsSource = commandsPipe.source()
+      commandsSource.configureBlocking(false)
+
+      val expectingCommands = mutable.MutableList[ZMQClientCommand]()
+      var waitTimeout = keepAliveTimeout.toMillis / 2
+      var requestId: Long = 0
+      val poller = context.poller(maxSockets)
+      val commandsIndex = poller.register(commandsSource, Poller.POLLIN)
+
+      do {
+        val ready = poller.poll(waitTimeout)
+        if (ready > 0) {
+
+          if (poller.pollin(commandsIndex)) { // consume new commands
+            expectingCommands ++= fetchNewCommands(commandsSource)
+          }
+
+          actualClientSocketMap.values.foreach { a ⇒
+            if (poller.pollin(a.pollerIndex)) {
+              consumeReply(a)
+            }
           }
         }
+
+        handleExpiredReplies()
+        handleExpiredSockets(poller)
+
+        // process new commands
+        expectingCommands.foreach {
+          case ask: ZMQClientAsk ⇒
+            requestId += 1
+            allocateSocketAndSend(ask, requestId, poller)
+
+          case ZMQClientThreadStop ⇒
+            shutdown = true
+        }
+        expectingCommands.clear()
+
+        // get new timeout
+        waitTimeout = keepAliveTimeout.toMillis / 2
+        val now = System.currentTimeMillis()
+        expectingReplyMap.values.flatten.map(_._2.commandTtl).foreach { ttl ⇒
+          val delta = 100 + ttl - now
+          waitTimeout = Math.max(Math.min(waitTimeout, delta), 100)
+        }
+      } while (!shutdown)
+
+      expectingReplyMap.values.flatten.foreach { case (_, v) ⇒
+        implicit val msx = MessagingContext(v.correlationId)
+        v.callback(Failure(ServiceUnavailable(ErrorBody("transport_shutdown"))))
+        v.socketWithTtl.release(log)
       }
 
-      handleExpiredReplies()
-      handleExpiredSockets(poller)
-
-      // process new commands
-      expectingCommands.foreach {
-        case ask: ZMQClientAsk ⇒
-          requestId += 1
-          allocateSocketAndSend(ask, requestId, poller)
-
-        case ZMQClientThreadStop ⇒
-          shutdown = true
-      }
-      expectingCommands.clear()
-
-      // get new timeout
-      waitTimeout = keepAliveTimeout.toMillis / 2
-      val now = System.currentTimeMillis()
-      expectingReplyMap.values.flatten.map(_._2.commandTtl).foreach { ttl ⇒
-        val delta = 100 + ttl - now
-        waitTimeout = Math.max(Math.min(waitTimeout, delta), 100)
-      }
-    } while (!shutdown)
-
-    expectingReplyMap.values.flatten.foreach { case (_, v) ⇒
-      implicit val msx = MessagingContext(v.correlationId)
-      v.callback(Failure(ServiceUnavailable(ErrorBody("transport_shutdown"))))
-      v.socketWithTtl.release(log)
+      actualClientSocketMap.values.foreach(_.release(log))
     }
-
-    actualClientSocketMap.values.foreach(_.release(log))
-  }
-  catch {
-    case NonFatal(e) ⇒
-      log.error("Unhandled", e)
-      e.printStackTrace()
+    catch {
+      case NonFatal(e) ⇒
+        log.error("Unhandled", e)
+    }
+    finally {
+      responseProcessorCommandQueue.put(ZMQResponseProcessorStop)
+      responseProcessorThread.join()
+    }
   }
 
   private def handleExpiredSockets(poller: Poller) = {
@@ -120,9 +158,6 @@ private[transport] class ZMQClientThread(context: Context,
   private def removeExpectingReply(replyId: Long, e: ExpectingReply): Unit = {
     e.socketWithTtl.release(log)
     expectingReplyMap.get(e.socketWithTtl.pollerIndex).foreach { map ⇒
-      if (log.isDebugEnabled) {
-        log.debug(s"Removing ${e.socketWithTtl.pollerIndex}/$replyId ${e.socketWithTtl.socket}")
-      }
       map.remove(replyId)
       if (map.isEmpty) {
         expectingReplyMap.remove(e.socketWithTtl.pollerIndex)
@@ -143,19 +178,7 @@ private[transport] class ZMQClientThread(context: Context,
       map.get(replyId).foreach { expecting ⇒
         expecting.socketWithTtl.updateTtl(keepAliveTimeout.toMillis)
         removeExpectingReply(replyId, expecting)
-
-        // todo: move this to separate thread
-        Task.fork {
-          Task.eval {
-            val result = Try {
-              MessageReader.from(message, expecting.responseDeserializer) match {
-                case NonFatal(error) ⇒ Failure(error)
-                case other ⇒ Success(other)
-              }
-            }.flatten
-            expecting.callback(result)
-          }
-        }.runAsync
+        responseProcessorCommandQueue.put(new ZMQResponseProcessReply(message, expecting.responseDeserializer, expecting.callback))
       }
     }
   }
@@ -164,19 +187,7 @@ private[transport] class ZMQClientThread(context: Context,
     while ((a.socket.getEvents & Poller.POLLIN) != 0) {
       val nullFrame = a.socket.recv()
       if (nullFrame.nonEmpty) {
-        var totalSkippedBytes: Int = nullFrame.length
-        if (log.isTraceEnabled) {
-          log.trace(s"Got ${new String(nullFrame)} instead of null frame")
-        }
-        while (a.socket.hasReceiveMore) {
-          val frame = a.socket.recv()
-          totalSkippedBytes += frame.length
-          if (log.isTraceEnabled) {
-            log.trace(s"Skipped frame: ${new String(frame)}")
-          }
-        }
-        log.warn(s"Got frame with ${nullFrame.size} bytes while expecting null frame from ${a.socket}. Ignored message with $totalSkippedBytes bytes.")
-
+        skipInvalidMessage("null frame", nullFrame, a.socket)
       } else if (a.socket.hasReceiveMore) {
         val requestId = a.socket.recv()
         if (a.socket.hasReceiveMore) {
@@ -252,6 +263,30 @@ private[transport] class ZMQClientThread(context: Context,
     }
   }
 
+  protected def runResponseProcessor(commandsQueue: LinkedBlockingQueue[ZMQResponseProcessorCommand]): Unit = {
+    try {
+      var shutdown = false
+      while (!shutdown) {
+        commandsQueue.take() match {
+          case ZMQResponseProcessorStop ⇒ shutdown = true
+          case reply: ZMQResponseProcessReply ⇒
+            Task.eval {
+              val result = Try {
+                MessageReader.from(reply.message, reply.responseDeserializer) match {
+                  case NonFatal(error) ⇒ Failure(error)
+                  case other ⇒ Success(other)
+                }
+              }.flatten
+              reply.callback(result)
+            }.runAsync
+        }
+      }
+    }
+    catch {
+      case NonFatal(e) ⇒
+        log.error("Unhandled exception", e)
+    }
+  }
 }
 
 private[transport] class SocketWithTtl(
@@ -284,8 +319,7 @@ private[transport] class SocketWithTtl(
   }
 }
 
-// todo: rename
-private[transport] class ExpectingReply(
+private [zmq] class ExpectingReply(
                                          val responseDeserializer: ResponseBaseDeserializer,
                                          val commandTtl: Long,
                                          val callback: Callback[ResponseBase],
@@ -294,3 +328,24 @@ private[transport] class ExpectingReply(
                                        ) {
   def isCommandExpired: Boolean = commandTtl < System.currentTimeMillis()
 }
+
+private [zmq] sealed trait ZMQClientCommand
+private [zmq] case object ZMQClientThreadStop extends ZMQClientCommand
+
+private [zmq] class ZMQClientAsk(val message: String,
+                   val correlationId: String,
+                   val responseDeserializer: ResponseBaseDeserializer,
+                   val serviceEndpoint: ServiceEndpoint,
+                   val ttl: Long,
+                   val callback: Callback[ResponseBase]
+                  ) extends ZMQClientCommand with CancelableCommand {
+  def isExpired: Boolean = ttlRemaining < 0
+
+  def ttlRemaining: Long = ttl - System.currentTimeMillis()
+}
+
+private [zmq] sealed trait ZMQResponseProcessorCommand
+private [zmq] case object ZMQResponseProcessorStop extends ZMQResponseProcessorCommand
+private [zmq] class ZMQResponseProcessReply(val message: String,
+                                                 val responseDeserializer: ResponseBaseDeserializer,
+                                                 val callback: Callback[ResponseBase]) extends ZMQResponseProcessorCommand
