@@ -6,8 +6,10 @@ import com.hypertino.hyperbus.model.{Body, ErrorBody, GatewayTimeout, MessagingC
 import com.hypertino.hyperbus.serialization.{MessageReader, RequestDeserializer, ResponseBaseDeserializer}
 import com.hypertino.hyperbus.transport.ZMQClient
 import com.hypertino.hyperbus.transport.api.{ServiceEndpoint, ServiceResolver}
+import com.hypertino.hyperbus.transport.resolvers.PlainEndpoint
 import monix.eval.Task
 import monix.execution.atomic.{AtomicInt, AtomicLong}
+import monix.reactive.Observable
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.time.{Millis, Span}
 import org.scalatest.{FlatSpec, Matchers}
@@ -33,22 +35,16 @@ object MockRequest {
 object MockResponse
 
 case class MockResolver(port: Option[Int]) extends ServiceResolver {
-  override def lookupService(serviceName: String): Task[ServiceEndpoint] = Task.now {
-    new ServiceEndpoint {
-      override def hostname: String = "localhost"
-      override def port: Option[Int] = MockResolver.this.port
-    }
+  override def serviceObservable(serviceName: String): Observable[Seq[ServiceEndpoint]] = {
+    Observable.now(Seq(PlainEndpoint("localhost", MockResolver.this.port)))
   }
 }
 
 case class CyclicResolver(ports: IndexedSeq[Int]) extends ServiceResolver {
   val current = AtomicInt(0)
 
-  override def lookupService(serviceName: String): Task[ServiceEndpoint] = Task.now {
-    new ServiceEndpoint {
-      override def hostname: String = "localhost"
-      override def port: Option[Int] = Some(ports(current.incrementAndGet() % ports.size))
-    }
+  override def serviceObservable(serviceName: String): Observable[Seq[ServiceEndpoint]] = {
+    Observable.now(Seq(PlainEndpoint("localhost", Some(ports(current.incrementAndGet() % ports.size)))))
   }
 }
 
