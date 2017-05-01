@@ -11,11 +11,12 @@ import com.hypertino.hyperbus.transport.api.matchers.RequestMatcher
 import com.hypertino.hyperbus.transport.api.{CommandEvent, ServerTransport}
 import com.hypertino.hyperbus.transport.zmq._
 import com.hypertino.hyperbus.util.ConfigUtils._
-import com.hypertino.hyperbus.util.{CallbackTask, FuzzyIndex, HyperbusSubscription, SchedulerInjector}
+import com.hypertino.hyperbus.util.{CallbackTask, FuzzyIndex, SchedulerInjector, SubjectSubscription}
 import com.typesafe.config.Config
 import monix.eval.Task
 import monix.execution.Scheduler
 import monix.reactive.Observable
+import monix.reactive.subjects.ConcurrentSubject
 import org.slf4j.LoggerFactory
 import org.zeromq.ZMQ
 import scaldi.Injector
@@ -47,8 +48,8 @@ class ZMQServer(
   protected val context = ZMQ.context(zmqIOThreadCount)
   context.setMaxSockets(maxSockets)
 
-  protected val commandSubscriptions = new FuzzyIndex[CommandHyperbusSubscription]
-  protected val subscriptions = TrieMap[HyperbusSubscription[_], Boolean]()
+  protected val commandSubscriptions = new FuzzyIndex[CommandSubjectSubscription]
+  protected val subscriptions = TrieMap[SubjectSubscription[_], Boolean]()
 
   protected val serverCommandsThread = new ZMQServerThread(
     context,
@@ -59,7 +60,7 @@ class ZMQServer(
   )
 
   override def commands[REQ <: RequestBase](matcher: RequestMatcher, inputDeserializer: RequestDeserializer[REQ]): Observable[CommandEvent[REQ]] = {
-    new CommandHyperbusSubscription(matcher, inputDeserializer)
+    new CommandSubjectSubscription(matcher, inputDeserializer)
       .observable
       .asInstanceOf[Observable[CommandEvent[REQ]]]
   }
@@ -77,9 +78,12 @@ class ZMQServer(
     }
   }
 
-  protected class CommandHyperbusSubscription(val requestMatcher: RequestMatcher,
-                                              val inputDeserializer: RequestDeserializer[RequestBase])
-    extends HyperbusSubscription[CommandEvent[RequestBase]] {
+  protected class CommandSubjectSubscription(val requestMatcher: RequestMatcher,
+                                             val inputDeserializer: RequestDeserializer[RequestBase])
+    extends SubjectSubscription[CommandEvent[RequestBase]] {
+
+    override protected val subject = ConcurrentSubject.publishToOne[CommandEvent[RequestBase]]
+
     override def remove(): Unit = {
       commandSubscriptions.remove(this)
       subscriptions -= this
@@ -92,8 +96,8 @@ class ZMQServer(
   }
 
   protected def processor(request: ZMQServerRequest): Task[Any] = {
-    val deserializeTask: Task[(CommandHyperbusSubscription, RequestBase)] = Task.eval {
-      var subscr: CommandHyperbusSubscription = null
+    val deserializeTask: Task[(CommandSubjectSubscription, RequestBase)] = Task.eval {
+      var subscr: CommandSubjectSubscription = null
       val msg = MessageReader.from[RequestBase](request.message, (reader: Reader, obj: Obj) ⇒ {
         implicit val fakeRequest: RequestBase = DynamicRequest(EmptyBody, RequestHeaders(obj))
 
