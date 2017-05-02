@@ -1,11 +1,9 @@
 package com.hypertino.hyperbus.transport
 
 import java.io.Reader
-import java.nio.channels.Pipe
-import java.util.concurrent.ConcurrentLinkedQueue
 
 import com.hypertino.binders.value.Obj
-import com.hypertino.hyperbus.model.{DynamicRequest, EmptyBody, ErrorBody, InternalServerError, MessagingContext, NotFound, RequestBase, RequestHeaders, ResponseBase}
+import com.hypertino.hyperbus.model.{DynamicRequest, EmptyBody, ErrorBody, InternalServerError, NotFound, RequestBase, RequestHeaders, ResponseBase}
 import com.hypertino.hyperbus.serialization.{MessageDeserializer, MessageReader, RequestDeserializer}
 import com.hypertino.hyperbus.transport.api.matchers.RequestMatcher
 import com.hypertino.hyperbus.transport.api.{CommandEvent, ServerTransport}
@@ -21,7 +19,6 @@ import org.slf4j.LoggerFactory
 import org.zeromq.ZMQ
 import scaldi.Injector
 
-import scala.collection.concurrent.TrieMap
 import scala.concurrent.duration.{FiniteDuration, _}
 import scala.util.Random
 import scala.util.control.NonFatal
@@ -49,7 +46,6 @@ class ZMQServer(
   context.setMaxSockets(maxSockets)
 
   protected val commandSubscriptions = new FuzzyIndex[CommandSubjectSubscription]
-  protected val subscriptions = TrieMap[SubjectSubscription[_], Boolean]()
 
   protected val serverCommandsThread = new ZMQServerThread(
     context,
@@ -69,8 +65,8 @@ class ZMQServer(
 
   override def shutdown(duration: FiniteDuration): Task[Boolean] = {
     Task.eval {
+      commandSubscriptions.toSeq.foreach(_.off())
       commandSubscriptions.clear()
-      subscriptions.foreach(_._1.off())
       serverCommandsThread.stop(duration)
       // todo: cancel subscriptions?
       context.close()
@@ -86,12 +82,10 @@ class ZMQServer(
 
     override def remove(): Unit = {
       commandSubscriptions.remove(this)
-      subscriptions -= this
     }
 
     override def add(): Unit = {
       commandSubscriptions.add(this)
-      subscriptions += this → false
     }
   }
 
