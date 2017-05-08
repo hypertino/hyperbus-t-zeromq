@@ -65,7 +65,7 @@ class ZMQServer(
 
   override def shutdown(duration: FiniteDuration): Task[Boolean] = {
     Task.eval {
-      commandSubscriptions.toSeq.foreach(_.off())
+      commandSubscriptions.toSeq.foreach(_.cancel())
       commandSubscriptions.clear()
       serverCommandsThread.stop(duration)
       // todo: cancel subscriptions?

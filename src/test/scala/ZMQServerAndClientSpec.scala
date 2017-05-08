@@ -26,7 +26,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
     MockResponse(MockBody(reader, ResponseHeaders(obj).contentType), ResponseHeaders(obj))
   }
   implicit val scheduler = monix.execution.Scheduler.Implicits.global
-  implicit var defaultPatience = PatienceConfig(timeout = Span(60000, Millis), interval = Span(30, Millis))
+  implicit var defaultPatience = PatienceConfig(timeout = Span(5000, Millis), interval = Span(30, Millis))
 
   "Server" should "handle client command" in {
     val serverTransport = new ZMQServer(
