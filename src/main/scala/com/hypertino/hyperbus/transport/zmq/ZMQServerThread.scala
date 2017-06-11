@@ -23,7 +23,11 @@ private[transport] class ZMQServerThread(context: Context,
 
   protected val log = LoggerFactory.getLogger(getClass)
 
-  private val thread = new Thread(() ⇒ run(), "zmq-commands")
+  private val thread = new Thread(new Runnable {
+    override def run(): Unit = {
+      ZMQServerThread.this.run()
+    }
+  }, "zmq-commands")
   thread.start()
 
   def reply(clientId: Array[Byte], replyId: Array[Byte], responseString: String): Unit = {
@@ -39,7 +43,11 @@ private[transport] class ZMQServerThread(context: Context,
   protected def run(): Unit = {
     try {
       val processorCommandQueue = new LinkedBlockingQueue[ZMQServerCommand]()
-      val processorThread = new Thread(() ⇒ runRequestProcessor(processorCommandQueue), "zmq-commands-processor")
+      val processorThread = new Thread(new Runnable {
+        override def run(): Unit = {
+          runRequestProcessor(processorCommandQueue)
+        }
+      }, "zmq-commands-processor")
       processorThread.start()
 
       var shutdown = false

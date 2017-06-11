@@ -37,9 +37,17 @@ private[transport] class ZMQClientThread(context: Context,
   protected val log = LoggerFactory.getLogger(getClass)
 
   private val responseProcessorCommandQueue = new LinkedBlockingQueue[ZMQResponseProcessorCommand]()
-  private val responseProcessorThread = new Thread(() ⇒ runResponseProcessor(responseProcessorCommandQueue), "zmq-ask-processor")
+  private val responseProcessorThread = new Thread(new Runnable {
+    override def run(): Unit = {
+      runResponseProcessor(responseProcessorCommandQueue)
+    }
+  }, "zmq-ask-processor")
 
-  private val thread = new Thread(() ⇒ run(), "zmq-ask")
+  private val thread = new Thread(new Runnable {
+    override def run(): Unit = {
+      ZMQClientThread.this.run()
+    }
+  }, "zmq-ask")
   thread.start()
 
   def ask(message: String,
@@ -53,8 +61,8 @@ private[transport] class ZMQClientThread(context: Context,
     if (thread.isAlive) {
       val askCommand = new ZMQClientAsk(message, correlationId, responseDeserializer, serviceEndpoint, ttl, callback)
       sendCommand(askCommand)
-      () => {
-        askCommand.cancel()
+      new Cancelable {
+        override def cancel(): Unit = askCommand.cancel()
       }
     }
     else {
