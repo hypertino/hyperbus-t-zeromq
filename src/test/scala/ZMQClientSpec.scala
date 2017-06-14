@@ -2,7 +2,7 @@ import java.io.Reader
 
 import com.hypertino.binders.value.Obj
 import com.hypertino.hyperbus.model.annotations.{body, request, response}
-import com.hypertino.hyperbus.model.{Body, ErrorBody, GatewayTimeout, MessagingContext, Method, Request, Response, ResponseHeaders}
+import com.hypertino.hyperbus.model.{Body, ErrorBody, GatewayTimeout, HRL, MessagingContext, Method, Request, Response, ResponseHeaders}
 import com.hypertino.hyperbus.serialization.{MessageReader, RequestDeserializer, ResponseBaseDeserializer}
 import com.hypertino.hyperbus.transport.ZMQClient
 import com.hypertino.hyperbus.transport.api.{ServiceEndpoint, ServiceResolver}
@@ -35,7 +35,7 @@ object MockRequest {
 object MockResponse
 
 case class MockResolver(port: Option[Int]) extends ServiceResolver {
-  override def serviceObservable(serviceName: String): Observable[Seq[ServiceEndpoint]] = {
+  override def serviceObservable(hrl: HRL): Observable[Seq[ServiceEndpoint]] = {
     Observable.now(Seq(PlainEndpoint("localhost", MockResolver.this.port)))
   }
 }
@@ -43,7 +43,7 @@ case class MockResolver(port: Option[Int]) extends ServiceResolver {
 case class CyclicResolver(ports: IndexedSeq[Int]) extends ServiceResolver {
   val current = AtomicInt(0)
 
-  override def serviceObservable(serviceName: String): Observable[Seq[ServiceEndpoint]] = {
+  override def serviceObservable(hrl: HRL): Observable[Seq[ServiceEndpoint]] = {
     Observable.now(Seq(PlainEndpoint("localhost", Some(ports(current.incrementAndGet() % ports.size)))))
   }
 }

@@ -99,7 +99,7 @@ class ZMQServer(
           subscr = subscription
           subscription.inputDeserializer(reader, obj)
         } getOrElse {
-          throw NotFound(ErrorBody("subscription_not_found", Some(fakeRequest.headers.hri.toString)))
+          throw NotFound(ErrorBody("subscription_not_found", Some(fakeRequest.headers.hrl.toString)))
         }
       })
       (subscr, msg)

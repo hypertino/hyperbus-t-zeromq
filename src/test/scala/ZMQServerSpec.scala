@@ -1,7 +1,7 @@
 import java.io.Reader
 
 import com.hypertino.binders.value.Obj
-import com.hypertino.hyperbus.model.{Body, HRI, Headers, Message, MessagingContext, RequestBase, ResponseBase, ResponseHeaders}
+import com.hypertino.hyperbus.model.{Body, Headers, Message, MessagingContext, RequestBase, ResponseBase, ResponseHeaders}
 import com.hypertino.hyperbus.serialization.{MessageReader, RequestDeserializer, ResponseBaseDeserializer}
 import com.hypertino.hyperbus.transport.ZMQServer
 import com.hypertino.hyperbus.transport.api.matchers.RequestMatcher
