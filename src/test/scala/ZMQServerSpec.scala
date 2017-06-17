@@ -1,7 +1,7 @@
 import java.io.Reader
 
 import com.hypertino.binders.value.Obj
-import com.hypertino.hyperbus.model.{Body, Headers, Message, MessagingContext, RequestBase, ResponseBase, ResponseHeaders}
+import com.hypertino.hyperbus.model.{Body, Headers, HeadersMap, Message, MessagingContext, RequestBase, ResponseBase, ResponseHeaders}
 import com.hypertino.hyperbus.serialization.{MessageReader, RequestDeserializer, ResponseBaseDeserializer}
 import com.hypertino.hyperbus.transport.ZMQServer
 import com.hypertino.hyperbus.transport.api.matchers.RequestMatcher
@@ -18,9 +18,9 @@ import scala.util.Success
 class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
   implicit val mcx = MessagingContext("123")
   var port = 11050
-  val requestDeserializer: RequestDeserializer[MockRequest] = MockRequest.apply(_: Reader, _: Obj)
-  val responseDeserializer : ResponseBaseDeserializer = (reader: Reader, obj: Obj) ⇒ {
-    MockResponse(MockBody(reader, ResponseHeaders(obj).contentType), ResponseHeaders(obj))
+  val requestDeserializer: RequestDeserializer[MockRequest] = MockRequest.apply(_: Reader, _: HeadersMap)
+  val responseDeserializer : ResponseBaseDeserializer = (reader: Reader, headersMap: HeadersMap) ⇒ {
+    MockResponse(MockBody(reader, ResponseHeaders(headersMap).contentType), ResponseHeaders(headersMap))
   }
   implicit val scheduler = monix.execution.Scheduler.Implicits.global
   implicit var defaultPatience = PatienceConfig(timeout = Span(60000, Millis), interval = Span(30, Millis))
@@ -125,7 +125,7 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
 case class EqualsMessage[M <: Message[_ <: Body,_ <: Headers]](a: M) extends Matcher[M] {
   def apply(other: M): MatchResult = {
     if (other.getClass == a.getClass &&
-      other.headers.all.v.toVector.filterNot(_._1 == "i").sortBy(_._1) == a.headers.all.v.toVector.filterNot(_._1 == "i").sortBy(_._1) &&
+      other.headers.toSet.filterNot(_._1 == "i") == a.headers.toSet.filterNot(_._1 == "i") &&
         //Map(other.headers.all: _*).equals(Map(a.headers.all: _*)) &&
       other.body == a.body) {
       MatchResult(true, s"$other is not equal to $a", s"$other should be equal to $a")

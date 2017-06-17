@@ -2,7 +2,7 @@ import java.io.Reader
 
 import com.hypertino.binders.value.Obj
 import com.hypertino.hyperbus.model.annotations.{body, request, response}
-import com.hypertino.hyperbus.model.{Body, ErrorBody, GatewayTimeout, HRL, MessagingContext, Method, Request, Response, ResponseHeaders}
+import com.hypertino.hyperbus.model.{Body, ErrorBody, GatewayTimeout, HRL, HeadersMap, MessagingContext, Method, Request, Response, ResponseHeaders}
 import com.hypertino.hyperbus.serialization.{MessageReader, RequestDeserializer, ResponseBaseDeserializer}
 import com.hypertino.hyperbus.transport.ZMQClient
 import com.hypertino.hyperbus.transport.api.{ServiceEndpoint, ServiceResolver}
@@ -51,11 +51,11 @@ case class CyclicResolver(ports: IndexedSeq[Int]) extends ServiceResolver {
 class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
   implicit val mcx = MessagingContext("123")
 
-  val responseDeserializer : ResponseBaseDeserializer = (reader: Reader, obj: Obj) ⇒ {
-    MockResponse(MockBody(reader, ResponseHeaders(obj).contentType), ResponseHeaders(obj))
+  val responseDeserializer : ResponseBaseDeserializer = (reader: Reader, headersMap: HeadersMap) ⇒ {
+    MockResponse(MockBody(reader, ResponseHeaders(headersMap).contentType), ResponseHeaders(headersMap))
   }
 
-  val requestDeserializer: RequestDeserializer[MockRequest] = MockRequest.apply(_: Reader, _: Obj)
+  val requestDeserializer: RequestDeserializer[MockRequest] = MockRequest.apply(_: Reader, _: HeadersMap)
   var port = 10050
   val mockResolver = MockResolver(None)
   implicit val scheduler = monix.execution.Scheduler.Implicits.global
