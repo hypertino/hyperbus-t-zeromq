@@ -55,7 +55,7 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
 
     val rr = clientSocket.recv()
     rr.toSeq should equal(ri.toSeq)
-    val result = MessageReader.from(clientSocket.recvStr(), responseDeserializer)
+    val result = MessageReader.fromString(clientSocket.recvStr(), responseDeserializer)
     result should equalResp(MockResponse(MockBody("agaM yey")))
 
     serverTransport.shutdown(1.second).runAsync
@@ -97,12 +97,12 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
 
     val rr2 = clientSocket2.recv()
     rr2.toSeq should equal(ri.toSeq)
-    val result2 = MessageReader.from(clientSocket2.recvStr(), responseDeserializer)
+    val result2 = MessageReader.fromString(clientSocket2.recvStr(), responseDeserializer)
     result2 should equalResp(MockResponse(MockBody("allA yey")))
 
     val rr1 = clientSocket1.recv()
     rr1.toSeq should equal(ri.toSeq)
-    val result1 = MessageReader.from(clientSocket1.recvStr(), responseDeserializer)
+    val result1 = MessageReader.fromString(clientSocket1.recvStr(), responseDeserializer)
     result1 should equalResp(MockResponse(MockBody("agaM yey")))
 
     serverTransport.shutdown(1.second).runAsync

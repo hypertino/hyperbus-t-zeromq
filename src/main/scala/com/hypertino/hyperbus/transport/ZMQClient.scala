@@ -57,7 +57,7 @@ class ZMQClient(val serviceResolver: ServiceResolver,
     serviceResolver.lookupService(message.headers.hrl).flatMap { serviceEndpoint ⇒
       Task.create[ResponseBase] { (_, callback) ⇒
         askThread.ask(message.serializeToString,
-          message.headers.correlationId.getOrElse(SeqGenerator.create()),
+          message.headers.correlationId,
           responseDeserializer,
           serviceEndpoint,
           System.currentTimeMillis + askTimeout.toMillis,

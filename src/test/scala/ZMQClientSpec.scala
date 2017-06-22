@@ -28,7 +28,7 @@ case class MockResponse[B <: MockBody](body: B) extends Response[B]
 
 object MockRequest {
   def apply(s: String): MockRequest = {
-    MessageReader.from[MockRequest](s, MockRequest.apply(_,_))
+    MessageReader.fromString[MockRequest](s, MockRequest.apply)
   }
 }
 

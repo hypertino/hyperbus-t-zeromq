@@ -292,7 +292,7 @@ private[transport] class ZMQClientThread(context: Context,
           case reply: ZMQResponseProcessReply ⇒
             Task.eval {
               val result = Try {
-                MessageReader.from(reply.message, reply.responseDeserializer) match {
+                MessageReader.fromString(reply.message, reply.responseDeserializer) match {
                   case NonFatal(error) ⇒ Failure(error)
                   case other ⇒ Success(other)
                 }

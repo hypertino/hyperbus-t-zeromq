@@ -92,7 +92,7 @@ class ZMQServer(
   protected def processor(request: ZMQServerRequest): Task[Any] = {
     val deserializeTask: Task[(CommandSubjectSubscription, RequestBase)] = Task.eval {
       var subscr: CommandSubjectSubscription = null
-      val msg = MessageReader.from[RequestBase](request.message, (reader: Reader, headersMap: HeadersMap) ⇒ {
+      val msg = MessageReader.fromString[RequestBase](request.message, (reader: Reader, headersMap: HeadersMap) ⇒ {
         implicit val fakeRequest: RequestBase = DynamicRequest(EmptyBody, RequestHeaders(headersMap))
 
         getRandom(commandSubscriptions.lookupAll(fakeRequest)).map { subscription ⇒
