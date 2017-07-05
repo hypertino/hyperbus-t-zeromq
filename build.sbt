@@ -9,8 +9,7 @@ name := "hyperbus-t-zeromq"
 version := "0.2-SNAPSHOT"
 
 libraryDependencies ++= Seq(
-  "com.hypertino"   %% "hyperbus-transport" % "0.2-SNAPSHOT",
-  "com.hypertino"   %% "hyperbus-model" % "0.2-SNAPSHOT",
+  "com.hypertino"   %% "hyperbus" % "0.2-SNAPSHOT",
   "org.zeromq" % "jeromq" % "0.4.0",
   "org.scalamock"   %% "scalamock-scalatest-support" % "3.5.0" % "test",
   "ch.qos.logback" % "logback-classic" % "1.1.8" % "test",
