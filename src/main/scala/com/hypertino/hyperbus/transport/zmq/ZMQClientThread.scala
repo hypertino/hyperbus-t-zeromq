@@ -191,12 +191,17 @@ private[transport] class ZMQClientThread(context: Context,
   }
 
   protected def callResponseHandler(pollerIndex: Int, replyId: Long, message: String) {
+    var handled = false
     expectingReplyMap.get(pollerIndex).foreach { map ⇒
       map.get(replyId).foreach { expecting ⇒
+        handled = true
         expecting.socketWithTtl.updateTtl(keepAliveTimeout.toMillis)
         removeExpectingReply(replyId, expecting)
         responseProcessorCommandQueue.put(new ZMQResponseProcessReply(message, expecting.responseDeserializer, expecting.callback))
       }
+    }
+    if (!handled) {
+      logger.trace(s"Response #$pollerIndex with reply $replyId is ignored")
     }
   }
 
@@ -264,6 +269,7 @@ private[transport] class ZMQClientThread(context: Context,
         aRequestId.flip()
         val e = new ExpectingReply(ask.responseDeserializer, ask.ttl, ask.callback, ask.correlationId, a)
 
+        logger.trace(s"Sending request $requestId: ${ask.message}")
         a.socket.send(null: Array[Byte], ZMQ.SNDMORE)
         a.socket.send(aRequestId.array(), ZMQ.SNDMORE)
         a.socket.send(ask.message)
@@ -283,7 +289,9 @@ private[transport] class ZMQClientThread(context: Context,
       var shutdown = false
       while (!shutdown) {
         commandsQueue.take() match {
-          case ZMQResponseProcessorStop ⇒ shutdown = true
+          case ZMQResponseProcessorStop ⇒
+            shutdown = true
+
           case reply: ZMQResponseProcessReply ⇒
             Task.eval {
               val result = Try {
@@ -292,8 +300,13 @@ private[transport] class ZMQClientThread(context: Context,
                   case other ⇒ Success(other)
                 }
               }.flatten
+              logger.trace(s"Received response $result")
               reply.callback(result)
             }.runAsync
+            .recover {
+              case NonFatal(e) ⇒
+                logger.error("Unhandled exception", e)
+            }
         }
       }
     }
@@ -353,8 +366,8 @@ private [zmq] class ZMQClientAsk(val message: String,
                    val callback: Callback[ResponseBase]
                   ) extends ZMQClientCommand with CancelableCommand {
   def isExpired: Boolean = ttlRemaining < 0
-
   def ttlRemaining: Long = ttl - System.currentTimeMillis()
+  override def toString: String = s"ZMQClientAsk($message,$correlationId,$responseDeserializer,$serviceEndpoint,$ttl,$callback)"
 }
 
 private [zmq] sealed trait ZMQResponseProcessorCommand

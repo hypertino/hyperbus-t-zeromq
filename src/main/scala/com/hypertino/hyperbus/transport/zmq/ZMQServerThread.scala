@@ -1,13 +1,11 @@
 package com.hypertino.hyperbus.transport.zmq
 
-import java.nio.channels.Pipe
-import java.util.concurrent.{ConcurrentLinkedQueue, LinkedBlockingQueue}
+import java.util.concurrent.LinkedBlockingQueue
 
 import com.typesafe.scalalogging.StrictLogging
 import monix.eval.Task
 import monix.execution.Scheduler
-import org.slf4j.LoggerFactory
-import org.zeromq.{ZMQ, ZMQException}
+import org.zeromq.ZMQ
 import org.zeromq.ZMQ.{Context, Poller, Socket}
 
 import scala.collection.mutable
@@ -63,17 +61,17 @@ private[transport] class ZMQServerThread(context: Context,
       val poller = context.poller(1)
       val commandsIndex = poller.register(commandsSource, Poller.POLLIN)
       var lastBindTry = 0l
+      var socketPollerIndexOption: Option[Int] = None
 
       do {
-        var frontendIndexOption: Option[Int] = None
-        if ((lastBindTry + waitTimeout) < System.currentTimeMillis() ) {
+        if (socketOption.isEmpty && (lastBindTry + waitTimeout) < System.currentTimeMillis() ) {
           lastBindTry = System.currentTimeMillis()
           val s = context.socket(ZMQ.ROUTER)
           try {
             s.bind(s"tcp://$interface:$port")
             logger.info(s"Socket $s bound to $interface:$port")
             socketOption = Some(s)
-            frontendIndexOption = Some(poller.register(s, Poller.POLLIN))
+            socketPollerIndexOption = Some(poller.register(s, Poller.POLLIN))
             waitTimeout = 60000
           }
           catch {
@@ -88,9 +86,9 @@ private[transport] class ZMQServerThread(context: Context,
             expectingCommands ++= fetchNewCommands(commandsSource)
           }
 
-          frontendIndexOption.foreach { frontendIndex ⇒
+          socketPollerIndexOption.foreach { socketPollerIndex ⇒
             val socket = socketOption.get
-            if (poller.pollin(frontendIndex)) {
+            if (poller.pollin(socketPollerIndex)) {
               while ((socket.getEvents & Poller.POLLIN) != 0) {
                 val clientId = socket.recv()
                 if (socket.hasReceiveMore) {
@@ -102,7 +100,9 @@ private[transport] class ZMQServerThread(context: Context,
                     val requestId = socket.recv()
                     if (socket.hasReceiveMore) {
                       val message = socket.recvStr()
-                      processorCommandQueue.put(new ZMQServerRequest(clientId, requestId, message))
+                      val r = new ZMQServerRequest(clientId, requestId, message)
+                      logger.trace(s"Received $r" )
+                      processorCommandQueue.put(r)
                     } else {
                       logger.warn(s"Got requestId frame but didn't get the following frame with message from $clientId.")
                     }
@@ -126,6 +126,7 @@ private[transport] class ZMQServerThread(context: Context,
 
           case response: ZMQServerResponse ⇒
             socketOption.foreach { socket ⇒
+              logger.trace(s"Replying with $response" )
               socket.send(response.clientId, ZMQ.SNDMORE)
               socket.send(null: Array[Byte], ZMQ.SNDMORE)
               socket.send(response.replyId, ZMQ.SNDMORE)
@@ -158,7 +159,13 @@ private[transport] class ZMQServerThread(context: Context,
         commandsQueue.take() match {
           case _: ZMQServerThreadStop ⇒ shutdown = true
           case request: ZMQServerRequest ⇒
-            processor(request).timeout(responseTimeout).runAsync
+            processor(request)
+              .timeout(responseTimeout)
+              .runAsync
+              .recover {
+                case NonFatal(e) ⇒
+                  logger.error("Unhandled exception", e)
+              }
           case other ⇒
             logger.error(s"Unexpected command $other")
         }
@@ -178,9 +185,13 @@ private [zmq] class ZMQServerResponse(
                                        val clientId: Array[Byte],
                                        val replyId: Array[Byte],
                                        val message: String
-                                     ) extends ZMQServerCommand
+                                     ) extends ZMQServerCommand {
+  override def toString: String = s"ZMQServerResponse($clientId,$replyId,$message)"
+}
 
 private [transport] class ZMQServerRequest(
                                             val clientId: Array[Byte],
                                             val replyId: Array[Byte],
-                                            val message: String) extends ZMQServerCommand
+                                            val message: String) extends ZMQServerCommand {
+  override def toString: String = s"ZMQServerRequest($clientId,$replyId,$message)"
+}

@@ -19,7 +19,7 @@ import org.zeromq.ZMQ
 import scaldi.Injector
 
 import scala.concurrent.duration.{FiniteDuration, _}
-import scala.util.Random
+import scala.util.{Failure, Random, Success}
 import scala.util.control.NonFatal
 
 class ZMQServer(
@@ -110,13 +110,19 @@ class ZMQServer(
       val command = CommandEvent(message, cb)
       val tPublish = subscription.publish(command)
 
-      Task.gatherUnordered(List(cb.task, tPublish)).map(_.head).map { response ⇒
-        val responseString = response match {
-          case r: ResponseBase ⇒ r.serializeToString
-          case NonFatal(e) ⇒ InternalServerError(ErrorBody("unhandled", Some(e.toString))).serializeToString
+      Task.zip2(cb.task, tPublish)
+        .map(_._1)
+        .materialize
+        .map { response ⇒
+          val responseString = response match {
+            case Success(r: ResponseBase) ⇒
+              r.serializeToString
+
+            case Failure(e) ⇒
+              InternalServerError(ErrorBody("unhandled", Some(e.toString))).serializeToString
+          }
+          serverCommandsThread.reply(request.clientId, request.replyId, responseString)
         }
-        serverCommandsThread.reply(request.clientId, request.replyId, responseString)
-      }
     }
   }
 

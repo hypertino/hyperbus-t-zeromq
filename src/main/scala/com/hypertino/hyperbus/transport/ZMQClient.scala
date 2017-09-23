@@ -10,7 +10,6 @@ import com.typesafe.config.Config
 import com.typesafe.scalalogging.StrictLogging
 import monix.eval.Task
 import monix.execution.Scheduler
-import org.slf4j.LoggerFactory
 import org.zeromq.ZMQ
 import scaldi.Injector
 
