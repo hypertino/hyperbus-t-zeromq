@@ -3,7 +3,7 @@ package com.hypertino.hyperbus.transport
 import java.io.Reader
 
 import com.hypertino.binders.value.Obj
-import com.hypertino.hyperbus.model.{DynamicRequest, EmptyBody, ErrorBody, HeadersMap, InternalServerError, NotFound, RequestBase, RequestHeaders, ResponseBase}
+import com.hypertino.hyperbus.model.{DynamicRequest, EmptyBody, ErrorBody, Headers, InternalServerError, NotFound, RequestBase, RequestHeaders, ResponseBase}
 import com.hypertino.hyperbus.serialization.{MessageDeserializer, MessageReader, RequestDeserializer}
 import com.hypertino.hyperbus.transport.api.matchers.RequestMatcher
 import com.hypertino.hyperbus.transport.api.{CommandEvent, ServerTransport}
@@ -92,12 +92,12 @@ class ZMQServer(
   protected def processor(request: ZMQServerRequest): Task[Any] = {
     val deserializeTask: Task[(CommandSubjectSubscription, RequestBase)] = Task.eval {
       var subscr: CommandSubjectSubscription = null
-      val msg = MessageReader.fromString[RequestBase](request.message, (reader: Reader, headersMap: HeadersMap) ⇒ {
-        implicit val fakeRequest: RequestBase = DynamicRequest(EmptyBody, RequestHeaders(headersMap))
+      val msg = MessageReader.fromString[RequestBase](request.message, (reader: Reader, headers: Headers) ⇒ {
+        implicit val fakeRequest: RequestBase = DynamicRequest(EmptyBody, RequestHeaders(headers))
 
         getRandom(commandSubscriptions.lookupAll(fakeRequest)).map { subscription ⇒
           subscr = subscription
-          subscription.inputDeserializer(reader, headersMap)
+          subscription.inputDeserializer(reader, headers)
         } getOrElse {
           throw NotFound(ErrorBody("subscription_not_found", Some(fakeRequest.headers.hrl.toString)))
         }
@@ -132,7 +132,7 @@ class ZMQServer(
   }
 
   // ignore body, this is only for deserializing headers
-  protected val emptyDeserializer: MessageDeserializer[RequestBase] = (reader: Reader, headersMap: HeadersMap) ⇒ {
-    DynamicRequest(EmptyBody, RequestHeaders(headersMap))
+  protected val emptyDeserializer: MessageDeserializer[RequestBase] = (reader: Reader, headers: Headers) ⇒ {
+    DynamicRequest(EmptyBody, RequestHeaders(headers))
   }
 }

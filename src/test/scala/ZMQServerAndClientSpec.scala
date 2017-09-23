@@ -1,7 +1,7 @@
 import java.io.Reader
 
 import com.hypertino.binders.value.Obj
-import com.hypertino.hyperbus.model.{HeadersMap, MessagingContext, RequestBase, ResponseBase, ResponseHeaders}
+import com.hypertino.hyperbus.model.{Headers, MessagingContext, RequestBase, ResponseBase, ResponseHeaders}
 import com.hypertino.hyperbus.serialization.{MessageReader, RequestDeserializer, ResponseBaseDeserializer}
 import com.hypertino.hyperbus.transport.{ZMQClient, ZMQServer}
 import com.hypertino.hyperbus.transport.api.matchers.RequestMatcher
@@ -21,9 +21,9 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
   implicit val mcx = MessagingContext("123")
   val mockResolver = MockResolver(None)
   var port = 11050
-  val requestDeserializer: RequestDeserializer[MockRequest] = MockRequest.apply(_: Reader, _: HeadersMap)
-  val responseDeserializer : ResponseBaseDeserializer = (reader: Reader, headersMap: HeadersMap) ⇒ {
-    MockResponse(MockBody(reader, ResponseHeaders(headersMap).contentType), ResponseHeaders(headersMap))
+  val requestDeserializer: RequestDeserializer[MockRequest] = MockRequest.apply(_: Reader, _: Headers)
+  val responseDeserializer : ResponseBaseDeserializer = (reader: Reader, headers: Headers) ⇒ {
+    MockResponse(MockBody(reader, ResponseHeaders(headers).contentType), ResponseHeaders(headers))
   }
   implicit val scheduler = monix.execution.Scheduler.Implicits.global
   implicit var defaultPatience = PatienceConfig(timeout = Span(5000, Millis), interval = Span(30, Millis))

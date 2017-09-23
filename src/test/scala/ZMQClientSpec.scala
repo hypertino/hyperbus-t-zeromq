@@ -2,7 +2,7 @@ import java.io.Reader
 
 import com.hypertino.binders.value.Obj
 import com.hypertino.hyperbus.model.annotations.{body, request, response}
-import com.hypertino.hyperbus.model.{Body, ErrorBody, GatewayTimeout, HRL, HeadersMap, MessagingContext, Method, Request, RequestBase, Response, ResponseHeaders}
+import com.hypertino.hyperbus.model.{Body, ErrorBody, GatewayTimeout, HRL, Headers, MessagingContext, Method, Request, RequestBase, RequestMetaCompanion, Response, ResponseBase, ResponseHeaders}
 import com.hypertino.hyperbus.serialization.{MessageReader, RequestDeserializer, ResponseBaseDeserializer}
 import com.hypertino.hyperbus.transport.ZMQClient
 import com.hypertino.hyperbus.transport.api.{ServiceEndpoint, ServiceResolver}
@@ -26,10 +26,17 @@ case class MockRequest(body: MockBody) extends Request[MockBody]
 @response(200)
 case class MockResponse[B <: MockBody](body: B) extends Response[B]
 
-object MockRequest {
+object MockRequest extends RequestMetaCompanion[MockRequest] {
   def apply(s: String): MockRequest = {
     MessageReader.fromString[MockRequest](s, MockRequest.apply)
   }
+
+  def apply(body: MockBody): MockRequest = {
+    MockRequest(body)
+  }
+
+  type ResponseType = ResponseBase
+  implicit val meta = this
 }
 
 object MockResponse
@@ -51,11 +58,11 @@ case class CyclicResolver(ports: IndexedSeq[Int]) extends ServiceResolver {
 class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
   implicit val mcx = MessagingContext("123")
 
-  val responseDeserializer : ResponseBaseDeserializer = (reader: Reader, headersMap: HeadersMap) ⇒ {
-    MockResponse(MockBody(reader, ResponseHeaders(headersMap).contentType), ResponseHeaders(headersMap))
+  val responseDeserializer : ResponseBaseDeserializer = (reader: Reader, headers: Headers) ⇒ {
+    MockResponse(MockBody(reader, ResponseHeaders(headers).contentType), ResponseHeaders(headers))
   }
 
-  val requestDeserializer: RequestDeserializer[MockRequest] = MockRequest.apply(_: Reader, _: HeadersMap)
+  val requestDeserializer: RequestDeserializer[MockRequest] = MockRequest.apply(_: Reader, _: Headers)
   var port = 10050
   val mockResolver = MockResolver(None)
   implicit val scheduler = monix.execution.Scheduler.Implicits.global
