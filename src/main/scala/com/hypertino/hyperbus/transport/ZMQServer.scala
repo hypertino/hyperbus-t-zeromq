@@ -2,7 +2,6 @@ package com.hypertino.hyperbus.transport
 
 import java.io.Reader
 
-import com.hypertino.binders.value.Obj
 import com.hypertino.hyperbus.model.{DynamicRequest, EmptyBody, ErrorBody, Headers, InternalServerError, NotFound, RequestBase, RequestHeaders, ResponseBase}
 import com.hypertino.hyperbus.serialization.{MessageDeserializer, MessageReader, RequestDeserializer}
 import com.hypertino.hyperbus.transport.api.matchers.RequestMatcher
@@ -11,11 +10,11 @@ import com.hypertino.hyperbus.transport.zmq._
 import com.hypertino.hyperbus.util.ConfigUtils._
 import com.hypertino.hyperbus.util.{CallbackTask, FuzzyIndex, SchedulerInjector, SubjectSubscription}
 import com.typesafe.config.Config
+import com.typesafe.scalalogging.StrictLogging
 import monix.eval.Task
 import monix.execution.Scheduler
 import monix.reactive.Observable
 import monix.reactive.subjects.ConcurrentSubject
-import org.slf4j.LoggerFactory
 import org.zeromq.ZMQ
 import scaldi.Injector
 
@@ -29,7 +28,7 @@ class ZMQServer(
                  val zmqIOThreadCount: Int,
                  val maxSockets: Int,
                  val serverResponseTimeout: FiniteDuration
-               )(implicit scheduler: Scheduler) extends ServerTransport {
+               )(implicit scheduler: Scheduler) extends ServerTransport with StrictLogging {
 
   def this(config: Config, inj: Injector) = this(
     config.getOptionInt("port").getOrElse(10050),
@@ -41,7 +40,6 @@ class ZMQServer(
     SchedulerInjector(config.getOptionString("scheduler"))(inj)
   )
 
-  protected val log = LoggerFactory.getLogger(getClass)
   protected val context = ZMQ.context(zmqIOThreadCount)
   context.setMaxSockets(maxSockets)
 

@@ -3,7 +3,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.Pipe
 import java.util.concurrent.ConcurrentLinkedQueue
 
-import org.slf4j.Logger
+import com.typesafe.scalalogging.Logger
 import org.zeromq.ZMQ.Socket
 
 import scala.collection.mutable
@@ -13,7 +13,7 @@ trait ZMQCommandsConsumer[C] {
   protected val commandsSink = commandsPipe.sink()
   commandsSink.configureBlocking(false)
   protected val commandsQueue = new ConcurrentLinkedQueue[C]
-  protected def log: Logger
+  protected def logger: Logger
 
   protected def fetchNewCommands(commandSource: Pipe.SourceChannel): Seq[C] = {
     val newCommands = mutable.MutableList[C]()
@@ -45,17 +45,13 @@ trait ZMQCommandsConsumer[C] {
 
   protected def skipInvalidMessage(expecting: String, nullFrame: Array[Byte], socket: Socket): Unit = {
     var totalSkippedBytes: Int = nullFrame.length
-    if (log.isTraceEnabled) {
-      log.trace(s"Got ${new String(nullFrame)} instead of null frame")
-    }
+    logger.trace(s"Got ${new String(nullFrame)} instead of null frame")
     while (socket.hasReceiveMore) {
       val frame = socket.recv()
       totalSkippedBytes += frame.length
-      if (log.isTraceEnabled) {
-        log.trace(s"Skipped frame: ${new String(frame)}")
-      }
+      logger.trace(s"Skipped frame: ${new String(frame)}")
     }
-    log.warn(s"Got frame with ${nullFrame.length} bytes while expecting $expecting from $socket. Ignored message with $totalSkippedBytes bytes.")
+    logger.warn(s"Got frame with ${nullFrame.length} bytes while expecting $expecting from $socket. Ignored message with $totalSkippedBytes bytes.")
   }
 }
 

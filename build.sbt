@@ -19,3 +19,7 @@ libraryDependencies ++= Seq(
 resolvers ++= Seq(
   Resolver.sonatypeRepo("public")
 )
+
+fork in Test := true
+
+parallelExecution in Test := false

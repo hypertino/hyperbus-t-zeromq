@@ -1,15 +1,13 @@
 package com.hypertino.hyperbus.transport
 
-import java.nio.channels.Pipe
-import java.util.concurrent.ConcurrentLinkedQueue
-
-import com.hypertino.hyperbus.model.{ErrorBody, MessagingContext, RequestBase, ResponseBase, ServiceUnavailable}
+import com.hypertino.hyperbus.model.{RequestBase, ResponseBase}
 import com.hypertino.hyperbus.serialization.ResponseBaseDeserializer
 import com.hypertino.hyperbus.transport.api.{ClientTransport, PublishResult, ServiceResolver}
 import com.hypertino.hyperbus.transport.zmq._
 import com.hypertino.hyperbus.util.ConfigUtils._
-import com.hypertino.hyperbus.util.{SchedulerInjector, SeqGenerator, ServiceResolverInjector}
+import com.hypertino.hyperbus.util.{SchedulerInjector, ServiceResolverInjector}
 import com.typesafe.config.Config
+import com.typesafe.scalalogging.StrictLogging
 import monix.eval.Task
 import monix.execution.Scheduler
 import org.slf4j.LoggerFactory
@@ -17,7 +15,6 @@ import org.zeromq.ZMQ
 import scaldi.Injector
 
 import scala.concurrent.duration.{FiniteDuration, _}
-import scala.util.Failure
 
 class ZMQClient(val serviceResolver: ServiceResolver,
                 val defaultPort: Int,
@@ -26,7 +23,7 @@ class ZMQClient(val serviceResolver: ServiceResolver,
                 val keepAliveTimeout: FiniteDuration,
                 val maxSockets: Int,
                 val maxOutputQueueSize: Int)
-               (implicit val scheduler: Scheduler) extends ClientTransport {
+               (implicit val scheduler: Scheduler) extends ClientTransport with StrictLogging {
 
   def this(config: Config, inj: Injector) = this(
     ServiceResolverInjector(config.getOptionString("resolver"))(inj),
@@ -40,7 +37,6 @@ class ZMQClient(val serviceResolver: ServiceResolver,
     SchedulerInjector(config.getOptionString("scheduler"))(inj)
   )
 
-  protected val log = LoggerFactory.getLogger(getClass)
   protected val context = ZMQ.context(zmqIOThreadCount)
   context.setMaxSockets(maxSockets)
 

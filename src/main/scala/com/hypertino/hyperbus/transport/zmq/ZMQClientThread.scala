@@ -1,15 +1,14 @@
 package com.hypertino.hyperbus.transport.zmq
 
-import java.nio.channels.Pipe
-import java.util.concurrent.{ConcurrentLinkedQueue, LinkedBlockingQueue}
+import java.util.concurrent.LinkedBlockingQueue
 
 import com.hypertino.hyperbus.model.{ErrorBody, GatewayTimeout, MessagingContext, ResponseBase, ServiceUnavailable}
 import com.hypertino.hyperbus.serialization.{MessageReader, ResponseBaseDeserializer}
 import com.hypertino.hyperbus.transport.api.{ServiceEndpoint, ServiceResolver}
+import com.typesafe.scalalogging.{Logger, StrictLogging}
 import monix.eval.{Callback, Task}
 import monix.execution.{Cancelable, Scheduler}
 import monix.execution.atomic.{AtomicInt, AtomicLong}
-import org.slf4j.{Logger, LoggerFactory}
 import org.zeromq.ZMQ
 import org.zeromq.ZMQ.{Context, Poller, Socket}
 
@@ -28,14 +27,12 @@ private[transport] class ZMQClientThread(context: Context,
                                          maxSockets: Int,
                                          maxOutputQueueSize: Int
                                         )
-                                        (implicit scheduler: Scheduler) extends ZMQCommandsConsumer[ZMQClientCommand] {
+                                        (implicit scheduler: Scheduler) extends ZMQCommandsConsumer[ZMQClientCommand] with StrictLogging {
 
   private val actualClientSocketMap = mutable.Map[(String, Int), SocketWithTtl]()
 
   private val expectingReplyMap = mutable.Map[Int, mutable.Map[Long, ExpectingReply]]()
-
-  protected val log = LoggerFactory.getLogger(getClass)
-
+  
   private val responseProcessorCommandQueue = new LinkedBlockingQueue[ZMQResponseProcessorCommand]()
   private val responseProcessorThread = new Thread(new Runnable {
     override def run(): Unit = {
@@ -152,15 +149,15 @@ private[transport] class ZMQClientThread(context: Context,
         v.foreach { case (_, e) ⇒
           implicit val msx = MessagingContext(e.correlationId)
           e.callback(Failure(ServiceUnavailable(ErrorBody("transport_shutdown"))))
-          e.socketWithTtl.release(log)
+          e.socketWithTtl.release(logger)
         }
       }
 
-      actualClientSocketMap.values.foreach(_.release(log))
+      actualClientSocketMap.values.foreach(_.release(logger))
     }
     catch {
       case NonFatal(e) ⇒
-        log.error("Unhandled", e)
+        logger.error("Unhandled", e)
     }
     finally {
       responseProcessorCommandQueue.put(ZMQResponseProcessorStop)
@@ -170,13 +167,13 @@ private[transport] class ZMQClientThread(context: Context,
 
   private def handleExpiredSockets(poller: Poller) = {
     actualClientSocketMap.filter(_._2.isExpired).foreach { case (k, a) ⇒
-      a.release(log)
+      a.release(logger)
       actualClientSocketMap.remove(k)
     }
   }
 
   private def removeExpectingReply(replyId: Long, e: ExpectingReply): Unit = {
-    e.socketWithTtl.release(log)
+    e.socketWithTtl.release(logger)
     expectingReplyMap.get(e.socketWithTtl.pollerIndex).foreach { map ⇒
       map.remove(replyId)
       if (map.isEmpty) {
@@ -217,13 +214,13 @@ private[transport] class ZMQClientThread(context: Context,
             callResponseHandler(a.pollerIndex, lRequestId, message)
           }
           else {
-            log.warn(s"Got frame ${requestId.size} bytes while expecting 8 bytes replyId frame from ${a.socket}.")
+            logger.warn(s"Got frame ${requestId.size} bytes while expecting 8 bytes replyId frame from ${a.socket}.")
           }
         } else {
-          log.warn(s"Got frame ${requestId.size} bytes but didn't get the following frame with message body from ${a.socket}.")
+          logger.warn(s"Got frame ${requestId.size} bytes but didn't get the following frame with message body from ${a.socket}.")
         }
       } else {
-        log.warn(s"Got null frame but didn't get the following frame with replyId from ${a.socket}.")
+        logger.warn(s"Got null frame but didn't get the following frame with replyId from ${a.socket}.")
       }
     }
   }
@@ -244,9 +241,7 @@ private[transport] class ZMQClientThread(context: Context,
             AtomicLong(keepAliveTimeout.toMillis + System.currentTimeMillis()),
             poller
           )
-          if (log.isDebugEnabled) {
-            log.debug(s"Allocated new socket: ${a.socket}/${a.pollerIndex} to $key")
-          }
+          logger.debug(s"Allocated new socket: ${a.socket}/${a.pollerIndex} to $key")
           actualClientSocketMap += key → a
           a
       }
@@ -304,7 +299,7 @@ private[transport] class ZMQClientThread(context: Context,
     }
     catch {
       case NonFatal(e) ⇒
-        log.error("Unhandled exception", e)
+        logger.error("Unhandled exception", e)
     }
   }
 }
@@ -325,11 +320,9 @@ private[transport] class SocketWithTtl(
 
   def addRef(): Unit = refCounter.increment()
 
-  def release(log: Logger): Boolean = {
+  def release(logger: Logger): Boolean = {
     if (refCounter.decrementAndGet() <= 0) {
-      if (log.isDebugEnabled) {
-        log.debug(s"Closing socket $socket")
-      }
+      logger.debug(s"Closing socket $socket")
       poller.unregister(socket)
       socket.close()
       false
