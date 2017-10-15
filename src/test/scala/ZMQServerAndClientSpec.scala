@@ -24,7 +24,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
     MockResponse(MockBody(reader, ResponseHeaders(headers).contentType), ResponseHeaders(headers))
   }
   implicit val scheduler = monix.execution.Scheduler.Implicits.global
-  implicit var defaultPatience = PatienceConfig(timeout = Span(20, Seconds), interval = Span(1, Seconds))
+  implicit var defaultPatience = PatienceConfig(timeout = Span(40, Seconds), interval = Span(1, Seconds))
 
   "Server" should "handle client command" in {
     val serverTransport = new ZMQServer(
@@ -95,7 +95,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
         "127.0.0.1",
         zmqIOThreadCount = 1,
         maxSockets = 20,
-        serverResponseTimeout = 15.seconds
+        serverResponseTimeout = 30.seconds
       )
     }
     Thread.sleep(2000)
@@ -107,8 +107,8 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
           CyclicResolver(servers.map(_.port)),
           defaultPort = server.port,
           zmqIOThreadCount = 1,
-          askTimeout = 15.seconds,
-          keepAliveTimeout = 20.seconds,
+          askTimeout = 30.seconds,
+          keepAliveTimeout = 40.seconds,
           maxSockets = 20,
           maxOutputQueueSize = 16384
         )
@@ -152,10 +152,10 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
       Task.gatherUnordered(allTasks).runAsync.futureValue
       total.get should equal(messageCount)
       subscriptions.foreach(_.cancel)
-      Task.gatherUnordered(clients.map(_.shutdown(10.seconds))).runAsync.futureValue
+      Task.gatherUnordered(clients.map(_.shutdown(20.seconds))).runAsync.futureValue
     }
     finally {
-      Task.gatherUnordered(servers.map(_.shutdown(10.seconds))).runAsync.futureValue
+      Task.gatherUnordered(servers.map(_.shutdown(20.seconds))).runAsync.futureValue
       Thread.sleep(2000)
     }
   }
