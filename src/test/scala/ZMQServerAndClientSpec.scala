@@ -34,6 +34,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
       maxSockets = 150,
       serverResponseTimeout = 5.seconds
     )
+    Thread.sleep(500)
 
     try {
       val clientTransport = new ZMQClient(
@@ -45,6 +46,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
         maxSockets = 150,
         maxOutputQueueSize = 10
       )
+      Thread.sleep(500)
 
       serverTransport.commands[MockRequest](
         RequestMatcher("hb://mock", "post"),
@@ -55,7 +57,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
         ))
         Continue
       }
-
+      Thread.sleep(500)
 
       val f = clientTransport.ask(MockRequest(MockBody("yey Maga")), responseDeserializer).runAsync
       f.futureValue should equalResp(MockResponse(MockBody("agaM yey")))
@@ -64,6 +66,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
     }
     finally {
       serverTransport.shutdown(1.second).runAsync.futureValue
+      Thread.sleep(500)
     }
   }
 
@@ -95,6 +98,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
         serverResponseTimeout = 15.seconds
       )
     }
+    Thread.sleep(2000)
     try {
       val clients = 0 until clientCount map { i ⇒
         val server = servers(i % servers.size)
@@ -109,6 +113,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
           maxOutputQueueSize = 16384
         )
       }
+      Thread.sleep(2000)
 
       val subscriptions = servers.map { s ⇒
         s.commands[MockRequest](
@@ -121,6 +126,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
           Continue
         }
       }
+      Thread.sleep(2000)
 
       val total = AtomicInt(0)
 
@@ -150,6 +156,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
     }
     finally {
       Task.gatherUnordered(servers.map(_.shutdown(10.seconds))).runAsync.futureValue
+      Thread.sleep(2000)
     }
   }
   def equalReq(other: RequestBase): Matcher[RequestBase] = EqualsMessage[RequestBase](other)
