@@ -142,9 +142,13 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
         Task.fromFuture(Task
           .gatherUnordered(tasks)
           .map { results ⇒
-            results.foreach { case (response: MockResponse[MockBody@unchecked], i) ⇒
-              response.body.test should startWith(s"${i.toString.reverse}yey")
-              total.increment()
+            results.foreach {
+              case (response: MockResponse[MockBody@unchecked], i) ⇒
+                response.body.test should startWith(s"${i.toString.reverse}yey")
+                total.increment()
+
+              case other ⇒
+                fail()
             }
           }
           .runAsync)

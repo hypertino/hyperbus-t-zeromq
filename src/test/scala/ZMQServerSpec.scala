@@ -30,7 +30,7 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
       "127.0.0.1",
       zmqIOThreadCount = 1,
       maxSockets = 150,
-      serverResponseTimeout = 100.milliseconds
+      serverResponseTimeout = 1000.milliseconds
     )
     try {
       serverTransport.commands[MockRequest](
@@ -71,7 +71,7 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
       "127.0.0.1",
       zmqIOThreadCount = 1,
       maxSockets = 150,
-      serverResponseTimeout = 100.milliseconds
+      serverResponseTimeout = 1000.milliseconds
     )
     try {
       serverTransport.commands[MockRequest](

@@ -75,7 +75,7 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
       mockResolver,
       defaultPort = port,
       zmqIOThreadCount = 1,
-      askTimeout = 500.milliseconds,
+      askTimeout = 1000.milliseconds,
       keepAliveTimeout = 10.seconds,
       maxSockets = 150,
       maxOutputQueueSize = 10
