@@ -1,10 +1,14 @@
 language: scala
 scala:
-# - 2.10.6
-# - 2.12.1
-- 2.11.8
+- 2.12.3
+- 2.11.11
 sudo: false
-script: $TRAVIS_BUILD_DIR/travis/build.sh
+script: $TRAVIS_BUILD_DIR/travis/script/build.sh
+git:
+  submodules: false
+before_install:
+- sed -i 's/git@github.com:/https:\/\/github.com\//' .gitmodules
+- git submodule update --init --recursive
 jdk:
 - oraclejdk8
 cache:

@@ -49,7 +49,9 @@ class ZMQClient(val serviceResolver: ServiceResolver,
   )
 
   override def ask(message: RequestBase, responseDeserializer: ResponseBaseDeserializer): Task[ResponseBase] = {
-    serviceResolver.lookupService(message).flatMap { serviceEndpoint ⇒
+    serviceResolver
+      .lookupService(message)
+      .flatMap { serviceEndpoint ⇒
       Task.create[ResponseBase] { (_, callback) ⇒
         askThread.ask(message.serializeToString,
           message.headers.correlationId,

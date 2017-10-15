@@ -1,15 +1,15 @@
-crossScalaVersions := Seq("2.12.1", "2.11.8")
+crossScalaVersions := Seq("2.12.3", "2.11.11")
 
-scalaVersion in Global := "2.11.8"
+scalaVersion in Global := crossScalaVersions.value.head
 
 organization := "com.hypertino"
 
 name := "hyperbus-t-zeromq"
 
-version := "0.2-SNAPSHOT"
+version := "0.3-SNAPSHOT"
 
 libraryDependencies ++= Seq(
-  "com.hypertino"   %% "hyperbus" % "0.2-SNAPSHOT",
+  "com.hypertino"   %% "hyperbus" % "0.3-SNAPSHOT",
   "org.zeromq" % "jeromq" % "0.4.0",
   "org.scalamock"   %% "scalamock-scalatest-support" % "3.5.0" % "test",
   "ch.qos.logback" % "logback-classic" % "1.1.8" % "test",
