@@ -1,11 +1,12 @@
 import java.io.Reader
 
+import com.hypertino.binders.value.Text
 import com.hypertino.hyperbus.model.annotations.{body, request, response}
 import com.hypertino.hyperbus.model.{Body, DefinedResponse, GatewayTimeout, Headers, MessagingContext, Method, Request, RequestBase, RequestHeaders, RequestMetaCompanion, Response, ResponseBase, ResponseHeaders, ResponseMeta}
 import com.hypertino.hyperbus.serialization.{MessageReader, RequestDeserializer, ResponseBaseDeserializer}
-import com.hypertino.hyperbus.transport.ZMQClient
+import com.hypertino.hyperbus.transport.{ZMQClient, ZMQHeader}
 import com.hypertino.hyperbus.transport.api.{ServiceEndpoint, ServiceResolver}
-import com.hypertino.hyperbus.transport.resolvers.PlainEndpoint
+import com.hypertino.hyperbus.transport.resolvers.{PlainEndpoint, PlainResolver}
 import monix.execution.atomic.AtomicInt
 import monix.reactive.Observable
 import org.scalatest.concurrent.ScalaFutures
@@ -69,7 +70,7 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
   implicit val scheduler = monix.execution.Scheduler.Implicits.global
   implicit var defaultPatience = PatienceConfig(timeout = Span(1000, Millis), interval = Span(30, Millis))
 
-  "ask without server" should "timeout" in {
+  "ask" should "timeout if no server is found" in {
     port += 1
     val clientTransport = new ZMQClient(
       mockResolver,
@@ -85,7 +86,7 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
     f.failed.futureValue shouldBe a[GatewayTimeout[_]]
   }
 
-  "ask" should "send request and return response" in {
+  it should "send request and return response" in {
     port += 1
 
     val ctx = ZMQ.context(1)
@@ -119,7 +120,7 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
     ctx.close()
   }
 
-  "ask" should "send request and return multiple response to the same endpoint" in {
+  it should "send request and return multiple response to the same endpoint" in {
     port += 1
 
     val ctx = ZMQ.context(1)
@@ -158,6 +159,41 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
     repSocket.send(requestId2, ZMQ.SNDMORE)
     repSocket.send(response2.serializeToString)
     f2.futureValue should equal(response2)
+
+    repSocket.close()
+    ctx.close()
+  }
+
+  it should "send request with ZMQ-Send-To directly without resolving endpoint" in {
+    port += 1
+
+    val ctx = ZMQ.context(1)
+    val response = MockResponse(MockBody("got-you"))
+
+    val clientTransport = new ZMQClient(
+      new PlainResolver(Map.empty),
+      defaultPort = port,
+      zmqIOThreadCount = 1,
+      askTimeout = 5000.milliseconds,
+      keepAliveTimeout = 10.seconds,
+      maxSockets = 150,
+      maxOutputQueueSize = 10
+    )
+
+    val repSocket = ctx.socket(ZMQ.REP)
+    repSocket.setLinger(1000)
+    repSocket.bind(s"tcp://*:$port")
+
+    val f = clientTransport.ask(MockRequest(MockBody("yey"), headers=Headers(ZMQHeader.ZMQ_SEND_TO → s"127.0.0.1:$port")),
+      responseDeserializer).runAsync
+
+    val requestId = repSocket.recv()
+    requestId.length should equal(8)
+    val msg = MockRequest.fromString(repSocket.recvStr())
+    msg.body.test should equal("yey")
+    repSocket.send(requestId, ZMQ.SNDMORE)
+    repSocket.send(response.serializeToString)
+    f.futureValue should equal(response)
 
     repSocket.close()
     ctx.close()

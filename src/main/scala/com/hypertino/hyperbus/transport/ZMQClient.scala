@@ -1,8 +1,10 @@
 package com.hypertino.hyperbus.transport
 
+import com.hypertino.binders.value.Text
 import com.hypertino.hyperbus.model.{RequestBase, ResponseBase}
 import com.hypertino.hyperbus.serialization.ResponseBaseDeserializer
-import com.hypertino.hyperbus.transport.api.{ClientTransport, PublishResult, ServiceResolver}
+import com.hypertino.hyperbus.transport.api.{ClientTransport, PublishResult, ServiceEndpoint, ServiceResolver}
+import com.hypertino.hyperbus.transport.resolvers.PlainEndpoint
 import com.hypertino.hyperbus.transport.zmq._
 import com.hypertino.hyperbus.util.ConfigUtils._
 import com.hypertino.hyperbus.util.{SchedulerInjector, ServiceResolverInjector}
@@ -49,8 +51,13 @@ class ZMQClient(val serviceResolver: ServiceResolver,
   )
 
   override def ask(message: RequestBase, responseDeserializer: ResponseBaseDeserializer): Task[ResponseBase] = {
-    serviceResolver
-      .lookupService(message)
+    val endPointTask = message.headers.get(ZMQHeader.ZMQ_SEND_TO) match {
+      case Some(Text(s)) ⇒ Task.now(parseEndPoint(s))
+      case Some(other) ⇒ Task.now(other.to[PlainEndpoint])
+      case None ⇒ serviceResolver.lookupService(message)
+    }
+
+    endPointTask
       .flatMap { serviceEndpoint ⇒
       Task.create[ResponseBase] { (_, callback) ⇒
         askThread.ask(message.serializeToString,
@@ -61,6 +68,16 @@ class ZMQClient(val serviceResolver: ServiceResolver,
           callback
         )
       }
+    }
+  }
+
+  protected def parseEndPoint(s: String): ServiceEndpoint = {
+    val i = s.indexOf(':')
+    if (i >= 0) {
+      PlainEndpoint(s.substring(0, i), Some(s.substring(i+1).toInt))
+    }
+    else {
+      PlainEndpoint(s, None)
     }
   }
 

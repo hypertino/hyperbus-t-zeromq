@@ -20,7 +20,6 @@ import scaldi.Injector
 
 import scala.concurrent.duration.{FiniteDuration, _}
 import scala.util.{Failure, Random, Success}
-import scala.util.control.NonFatal
 
 class ZMQServer(
                  val port: Int,
