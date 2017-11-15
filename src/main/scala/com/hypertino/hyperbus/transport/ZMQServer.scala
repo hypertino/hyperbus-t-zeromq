@@ -7,6 +7,7 @@ import com.hypertino.hyperbus.serialization.{MessageDeserializer, MessageReader,
 import com.hypertino.hyperbus.transport.api.matchers.RequestMatcher
 import com.hypertino.hyperbus.transport.api.{CommandEvent, ServerTransport}
 import com.hypertino.hyperbus.transport.zmq._
+import com.hypertino.hyperbus.transport.zmq.utils.ErrorCode
 import com.hypertino.hyperbus.util.ConfigUtils._
 import com.hypertino.hyperbus.util.{CallbackTask, FuzzyIndex, SchedulerInjector, SubjectSubscription}
 import com.typesafe.config.Config
@@ -96,7 +97,7 @@ class ZMQServer(
           subscr = subscription
           subscription.inputDeserializer(reader, headers)
         } getOrElse {
-          throw NotFound(ErrorBody("subscription_not_found", Some(fakeRequest.headers.hrl.toString)))
+          throw NotFound(ErrorBody(ErrorCode.ZMQ_SUBSCRIPTION_NOT_FOUND, Some(fakeRequest.headers.hrl.toString)))
         }
       })
       (subscr, msg)
@@ -118,7 +119,7 @@ class ZMQServer(
               r.serializeToString
 
             case Failure(e) ⇒
-              InternalServerError(ErrorBody("unhandled", Some(e.toString))).serializeToString
+              InternalServerError(ErrorBody(ErrorCode.ZMQ_UNHANDLED, Some(e.toString))).serializeToString
           }
           serverCommandsThread.reply(request.clientId, request.replyId, responseString)
         }

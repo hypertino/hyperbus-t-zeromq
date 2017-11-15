@@ -5,6 +5,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import com.hypertino.hyperbus.model.{ErrorBody, GatewayTimeout, MessagingContext, ResponseBase, ServiceUnavailable}
 import com.hypertino.hyperbus.serialization.{MessageReader, ResponseBaseDeserializer}
 import com.hypertino.hyperbus.transport.api.{ServiceEndpoint, ServiceResolver}
+import com.hypertino.hyperbus.transport.zmq.utils.ErrorCode
 import com.typesafe.scalalogging.{Logger, StrictLogging}
 import monix.eval.{Callback, Task}
 import monix.execution.{Cancelable, Scheduler}
@@ -64,7 +65,7 @@ private[transport] class ZMQClientThread(context: Context,
     }
     else {
       implicit val mcx = MessagingContext(correlationId)
-      callback(Failure(ServiceUnavailable(ErrorBody("transport_shutdown"))))
+      callback(Failure(ServiceUnavailable(ErrorBody(ErrorCode.ZMQ_TRANSPORT_SHUTDOWN))))
       Cancelable.empty
     }
   }
@@ -84,7 +85,7 @@ private[transport] class ZMQClientThread(context: Context,
       cmd match {
         case ask: ZMQClientAsk ⇒
           implicit val mcx = MessagingContext(ask.correlationId)
-          ask.callback(Failure(ServiceUnavailable(ErrorBody("shutdown_requested"))))
+          ask.callback(Failure(ServiceUnavailable(ErrorBody(ErrorCode.ZMQ_TRANSPORT_SHUTDOWN_REQUESTED))))
         case _ ⇒
       }
     } while (cmd != null)
@@ -148,7 +149,7 @@ private[transport] class ZMQClientThread(context: Context,
       expectingReplyMap.foreach { case (_, v) ⇒
         v.foreach { case (_, e) ⇒
           implicit val msx = MessagingContext(e.correlationId)
-          e.callback(Failure(ServiceUnavailable(ErrorBody("transport_shutdown"))))
+          e.callback(Failure(ServiceUnavailable(ErrorBody(ErrorCode.ZMQ_TRANSPORT_SHUTDOWN))))
           e.socketWithTtl.release(logger)
         }
       }
@@ -186,7 +187,7 @@ private[transport] class ZMQClientThread(context: Context,
     expectingReplyMap.values.flatten.filter(i ⇒ i._2.isCommandExpired).foreach { case (replyId, expectingReply) ⇒
       removeExpectingReply(replyId, expectingReply)
       implicit val msx = MessagingContext(expectingReply.correlationId)
-      expectingReply.callback(Failure(GatewayTimeout(ErrorBody("ask_timeout"))))
+      expectingReply.callback(Failure(GatewayTimeout(ErrorBody(ErrorCode.ZMQ_ASK_TIMEOUT))))
     }
   }
 
@@ -262,7 +263,7 @@ private[transport] class ZMQClientThread(context: Context,
       }
       if (map.size >= maxOutputQueueSize) {
         implicit val mcx = MessagingContext(ask.correlationId)
-        ask.callback(Failure(ServiceUnavailable(ErrorBody("output_queue_limit_reached", Some(s"Queue size limit to $key is reached ($maxOutputQueueSize)")))))
+        ask.callback(Failure(ServiceUnavailable(ErrorBody(ErrorCode.ZMQ_OUTPUT_QUE_LIMIT_REACHED, Some(s"Queue size limit to $key is reached ($maxOutputQueueSize)")))))
       } else {
         val aRequestId = java.nio.ByteBuffer.allocate(8)
         aRequestId.putLong(requestId)
