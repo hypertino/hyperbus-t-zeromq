@@ -28,7 +28,7 @@ import org.zeromq.ZMQ
 import scaldi.Injector
 
 import scala.concurrent.duration.{FiniteDuration, _}
-import scala.util.{Failure, Random, Success}
+import scala.util.{Failure, Random, Success, Try}
 
 class ZMQServer(
                  val port: Int,
@@ -73,9 +73,13 @@ class ZMQServer(
     Task.eval {
       commandSubscriptions.toSeq.foreach(_.stop())
       commandSubscriptions.clear()
-      serverCommandsThread.stop(duration)
+      Try(serverCommandsThread.stop(duration)).recover {
+        case t: Throwable ⇒ logger.error("ZMQServerThread.stop failed", t)
+      }
       // todo: cancel subscriptions?
-      context.close()
+      Try(context.close()).recover {
+        case t: Throwable ⇒ logger.error("ZMQ.context.close failed", t)
+      }
       true
     }
   }

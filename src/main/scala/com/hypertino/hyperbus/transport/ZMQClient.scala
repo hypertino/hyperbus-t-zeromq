@@ -24,6 +24,7 @@ import org.zeromq.ZMQ
 import scaldi.Injector
 
 import scala.concurrent.duration.{FiniteDuration, _}
+import scala.util.Try
 
 class ZMQClient(val serviceResolver: ServiceResolver,
                 val defaultPort: Int,
@@ -93,8 +94,12 @@ class ZMQClient(val serviceResolver: ServiceResolver,
 
   override def shutdown(duration: FiniteDuration): Task[Boolean] = {
     Task.eval {
-      askThread.stop(duration.toMillis)
-      context.close()
+      Try(askThread.stop(duration.toMillis)).recover {
+        case t: Throwable ⇒ logger.error("ZMQClientThread.stop failed", t)
+      }
+      Try(context.close()).recover {
+        case t: Throwable ⇒ logger.error("ZMQ.context.close failed", t)
+      }
       true
     }
   }
