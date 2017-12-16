@@ -69,6 +69,10 @@ class ZMQServer(
 
   override def events[REQ <: RequestBase](matcher: RequestMatcher, groupName: String, inputDeserializer: RequestDeserializer[REQ]): Observable[REQ] = ???
 
+  override def startServices(): Unit = {
+    serverCommandsThread.start()
+  }
+
   override def shutdown(duration: FiniteDuration): Task[Boolean] = {
     Task.eval {
       commandSubscriptions.toSeq.foreach(_.stop())

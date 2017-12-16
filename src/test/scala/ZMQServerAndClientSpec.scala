@@ -65,6 +65,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
         ))
         Continue
       }
+      serverTransport.startServices()
       Thread.sleep(500)
 
       val f = clientTransport.ask(MockRequest(MockBody("yey Maga")), responseDeserializer).runAsync
@@ -106,6 +107,7 @@ class ZMQServerAndClientSpec extends FlatSpec with ScalaFutures with Matchers {
         serverResponseTimeout = 30.seconds
       )
     }
+    servers.foreach(_.startServices())
     Thread.sleep(2000)
     try {
       val clients = 0 until clientCount map { i ⇒

@@ -76,7 +76,7 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
   var port = 10050
   val mockResolver = MockResolver(None)
   implicit val scheduler = monix.execution.Scheduler.Implicits.global
-  implicit var defaultPatience = PatienceConfig(timeout = Span(1000, Millis), interval = Span(30, Millis))
+  implicit var defaultPatience = PatienceConfig(timeout = Span(3000, Millis), interval = Span(30, Millis))
 
   "ask" should "timeout if no server is found" in {
     port += 1

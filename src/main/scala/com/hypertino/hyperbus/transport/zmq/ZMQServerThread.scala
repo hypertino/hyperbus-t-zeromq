@@ -27,16 +27,18 @@ private[transport] class ZMQServerThread(context: Context,
                                          responseTimeout: FiniteDuration
                                         )
                                         (implicit scheduler: Scheduler) extends ZMQCommandsConsumer[ZMQServerCommand] with StrictLogging {
-
   private val thread = new Thread(new Runnable {
     override def run(): Unit = {
       ZMQServerThread.this.run()
     }
   }, "zmq-commands")
-  thread.start()
 
   def reply(clientId: Array[Byte], replyId: Array[Byte], responseString: String): Unit = {
     sendCommand(new ZMQServerResponse(clientId, replyId, responseString))
+  }
+
+  def start(): Unit = {
+    thread.start()
   }
 
   def stop(duration: FiniteDuration): Unit = {

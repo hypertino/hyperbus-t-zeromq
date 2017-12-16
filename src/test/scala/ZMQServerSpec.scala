@@ -50,6 +50,7 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
         ))
         Continue
       }
+      serverTransport.startServices()
 
       val ctx = ZMQ.context(1)
       val clientSocket = ctx.socket(ZMQ.REQ)
@@ -91,6 +92,7 @@ class ZMQServerSpec extends FlatSpec with ScalaFutures with Matchers {
         ))
         Continue
       }
+      serverTransport.startServices()
 
       val ctx = ZMQ.context(1)
       val clientSocket1 = ctx.socket(ZMQ.REQ)
