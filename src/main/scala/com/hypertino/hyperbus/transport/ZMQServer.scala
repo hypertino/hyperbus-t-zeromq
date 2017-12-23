@@ -10,7 +10,7 @@ package com.hypertino.hyperbus.transport
 
 import java.io.Reader
 
-import com.hypertino.hyperbus.model.{DynamicRequest, EmptyBody, ErrorBody, Headers, InternalServerError, NotFound, RequestBase, RequestHeaders, ResponseBase}
+import com.hypertino.hyperbus.model.{BadGateway, DynamicRequest, EmptyBody, ErrorBody, Headers, InternalServerError, NotFound, RequestBase, RequestHeaders, ResponseBase}
 import com.hypertino.hyperbus.serialization.{MessageDeserializer, MessageReader, RequestDeserializer}
 import com.hypertino.hyperbus.transport.api.matchers.RequestMatcher
 import com.hypertino.hyperbus.transport.api.{CommandEvent, ServerTransport}
@@ -113,7 +113,7 @@ class ZMQServer(
           subscr = subscription
           subscription.inputDeserializer(reader, headers)
         } getOrElse {
-          throw NotFound(ErrorBody(ErrorCode.ZMQ_SUBSCRIPTION_NOT_FOUND, Some(fakeRequest.headers.hrl.toString)))
+          throw BadGateway(ErrorBody(ErrorCode.ZMQ_SUBSCRIPTION_NOT_FOUND, Some(fakeRequest.headers.hrl.toString)))
         }
       })
       (subscr, msg)

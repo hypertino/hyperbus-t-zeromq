@@ -10,6 +10,7 @@ package com.hypertino.hyperbus.transport.zmq
 
 import java.util.concurrent.LinkedBlockingQueue
 
+import com.hypertino.hyperbus.model.HyperbusError
 import com.typesafe.scalalogging.StrictLogging
 import monix.eval.Task
 import monix.execution.Scheduler
@@ -173,7 +174,10 @@ private[transport] class ZMQServerThread(context: Context,
               .timeout(responseTimeout)
               .runAsync
               .recover {
-                case NonFatal(e) ⇒
+                case e: HyperbusError[_] ⇒
+                  reply(request.clientId, request.replyId, e.serializeToString)
+
+                case e: Throwable ⇒
                   logger.error("Unhandled exception", e)
               }
           case other ⇒
