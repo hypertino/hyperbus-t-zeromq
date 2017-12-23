@@ -6,7 +6,7 @@ organization := "com.hypertino"
 
 name := "hyperbus-t-zeromq"
 
-version := "0.6-SNAPSHOT"
+version := "0.6.1-SNAPSHOT"
 
 libraryDependencies ++= Seq(
   "com.hypertino"   %% "hyperbus" % "0.6-SNAPSHOT",
