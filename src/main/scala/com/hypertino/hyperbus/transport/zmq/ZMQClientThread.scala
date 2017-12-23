@@ -10,7 +10,7 @@ package com.hypertino.hyperbus.transport.zmq
 
 import java.util.concurrent.LinkedBlockingQueue
 
-import com.hypertino.hyperbus.model.{ErrorBody, GatewayTimeout, MessagingContext, ResponseBase, ServiceUnavailable}
+import com.hypertino.hyperbus.model.{BadGateway, ErrorBody, GatewayTimeout, MessagingContext, ResponseBase, ServiceUnavailable}
 import com.hypertino.hyperbus.serialization.{MessageReader, ResponseBaseDeserializer}
 import com.hypertino.hyperbus.transport.api.{ServiceEndpoint, ServiceResolver}
 import com.hypertino.hyperbus.transport.zmq.utils.ErrorCode
@@ -112,24 +112,32 @@ private[transport] class ZMQClientThread(context: Context,
       var requestId: Long = 0
       val poller = context.poller(maxSockets)
       val commandsIndex = poller.register(commandsSource, Poller.POLLIN)
+      var lastGC = System.currentTimeMillis()
+      val GC_PERIOD = 300
 
       do {
         val ready = poller.poll(waitTimeout)
         if (ready > 0) {
-
           if (poller.pollin(commandsIndex)) { // consume new commands
             expectingCommands ++= fetchNewCommands(commandsSource)
           }
 
-          actualClientSocketMap.values.foreach { a ⇒
+          actualClientSocketMap.foreach { case(k, a) ⇒
             if (poller.pollin(a.pollerIndex)) {
-              consumeReply(a)
+              consumeReplies(a)
+            }
+            if (poller.pollerr(a.pollerIndex)) {
+              failReplies(k, a)
             }
           }
         }
 
-        handleExpiredReplies()
-        handleExpiredSockets(poller)
+        val now = System.currentTimeMillis()
+        if ((lastGC + GC_PERIOD) < now) {
+          handleExpiredReplies()
+          handleExpiredSockets()
+          lastGC = now
+        }
 
         // process new commands
         expectingCommands.foreach {
@@ -144,7 +152,6 @@ private[transport] class ZMQClientThread(context: Context,
 
         // get new timeout
         waitTimeout = keepAliveTimeout.toMillis / 2
-        val now = System.currentTimeMillis()
         expectingReplyMap.foreach { case (_, v) ⇒
           v.foreach { case (_, e) ⇒
             val delta = 100 + e.commandTtl - now
@@ -158,11 +165,10 @@ private[transport] class ZMQClientThread(context: Context,
         v.foreach { case (_, e) ⇒
           implicit val msx = MessagingContext(e.correlationId)
           e.callback(Failure(ServiceUnavailable(ErrorBody(ErrorCode.ZMQ_TRANSPORT_SHUTDOWN))))
-          e.socketWithTtl.release(logger)
         }
       }
 
-      actualClientSocketMap.values.foreach(_.release(logger))
+      actualClientSocketMap.values.foreach(_.close(logger))
     }
     catch {
       case NonFatal(e) ⇒
@@ -174,9 +180,9 @@ private[transport] class ZMQClientThread(context: Context,
     }
   }
 
-  private def handleExpiredSockets(poller: Poller) = {
+  private def handleExpiredSockets(): Unit = {
     actualClientSocketMap.filter(_._2.isExpired).foreach { case (k, a) ⇒
-      a.release(logger)
+      a.close(logger)
       actualClientSocketMap.remove(k)
     }
   }
@@ -204,7 +210,7 @@ private[transport] class ZMQClientThread(context: Context,
     expectingReplyMap.get(pollerIndex).foreach { map ⇒
       map.get(replyId).foreach { expecting ⇒
         handled = true
-        expecting.socketWithTtl.updateTtl(keepAliveTimeout.toMillis)
+        expecting.socketWithTtl.updateTtl(keepAliveTimeout.toMillis + System.currentTimeMillis())
         removeExpectingReply(replyId, expecting)
         responseProcessorCommandQueue.put(new ZMQResponseProcessReply(message, expecting.responseDeserializer, expecting.callback))
       }
@@ -214,7 +220,7 @@ private[transport] class ZMQClientThread(context: Context,
     }
   }
 
-  protected def consumeReply(a: SocketWithTtl): Unit = {
+  protected def consumeReplies(a: SocketWithTtl): Unit = {
     while ((a.socket.getEvents & Poller.POLLIN) != 0) {
       val nullFrame = a.socket.recv()
       if (nullFrame.nonEmpty) {
@@ -239,12 +245,27 @@ private[transport] class ZMQClientThread(context: Context,
     }
   }
 
+  protected def failReplies(k: (String, Int), a: SocketWithTtl): Unit = {
+    if ((a.socket.getEvents & Poller.POLLERR) != 0) {
+      expectingReplyMap.get(a.pollerIndex).foreach { map ⇒
+        map.foreach { case (replyId, expectingReply) ⇒
+          implicit val msx = MessagingContext(expectingReply.correlationId)
+          expectingReply.callback(Failure(BadGateway(ErrorBody(ErrorCode.ZMQ_ASK_FAILURE))))
+        }
+        expectingReplyMap.remove(a.pollerIndex)
+      }
+      actualClientSocketMap.remove(k)
+      a.close(logger)
+    }
+  }
+
   protected def allocateSocketAndSend(ask: ZMQClientAsk, requestId: Long, poller: Poller): Unit = {
     val key = (ask.serviceEndpoint.hostname, ask.serviceEndpoint.port.getOrElse(defaultPort))
+    val socketTtl = Math.max(ask.ttl, keepAliveTimeout.toMillis + System.currentTimeMillis())
     val socketTry: Try[SocketWithTtl] = Try {
       actualClientSocketMap.get(key) match {
         case Some(a) ⇒
-          a.updateTtl(keepAliveTimeout.toMillis)
+          a.updateTtl(socketTtl)
           a
 
         case None ⇒
@@ -252,7 +273,7 @@ private[transport] class ZMQClientThread(context: Context,
           socket.connect(s"tcp://${ask.serviceEndpoint.hostname}:${ask.serviceEndpoint.port.getOrElse(defaultPort)}")
           val a = new SocketWithTtl(
             socket,
-            AtomicLong(keepAliveTimeout.toMillis + System.currentTimeMillis()),
+            AtomicLong(socketTtl),
             poller
           )
           logger.debug(s"Allocated new socket: ${a.socket}/${a.pollerIndex} to $key")
@@ -332,10 +353,12 @@ private[transport] class SocketWithTtl(
                                         poller: Poller
                                       ) {
   private val refCounter = AtomicInt(1)
-  val pollerIndex: Int = poller.register(socket)
+  val pollerIndex: Int = poller.register(socket, Poller.POLLIN | Poller.POLLERR)
 
-  def updateTtl(keepAliveTimeout: Long): Unit = {
-    ttl.set(keepAliveTimeout + System.currentTimeMillis())
+  def updateTtl(newTtl: Long): Unit = {
+    if (ttl.get < newTtl) {
+      ttl.set(newTtl)
+    }
   }
 
   def isExpired: Boolean = ttl.get < System.currentTimeMillis()
@@ -344,13 +367,17 @@ private[transport] class SocketWithTtl(
 
   def release(logger: Logger): Boolean = {
     if (refCounter.decrementAndGet() <= 0) {
-      logger.debug(s"Closing socket $socket")
-      poller.unregister(socket)
-      socket.close()
+      close(logger)
       false
     } else {
       true
     }
+  }
+
+  def close(logger: Logger): Unit = {
+    logger.debug(s"Closing socket $socket")
+    poller.unregister(socket)
+    socket.close()
   }
 }
 

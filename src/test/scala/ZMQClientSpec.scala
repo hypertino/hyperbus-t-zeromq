@@ -206,4 +206,74 @@ class ZMQClientSpec extends FlatSpec with ScalaFutures with Matchers {
     repSocket.close()
     ctx.close()
   }
+
+  it should "update ttl according to ask/command" in {
+    port += 1
+
+    val ctx = ZMQ.context(1)
+    val response = MockResponse(MockBody("got-you"))
+
+    val clientTransport = new ZMQClient(
+      mockResolver,
+      defaultPort = port,
+      zmqIOThreadCount = 1,
+      askTimeout = 5.seconds,
+      keepAliveTimeout = 1.second,
+      maxSockets = 150,
+      maxOutputQueueSize = 10
+    )
+
+    val repSocket = ctx.socket(ZMQ.REP)
+    repSocket.setLinger(1000)
+    repSocket.bind(s"tcp://*:$port")
+
+    val f = clientTransport.ask(MockRequest(MockBody("yey")), responseDeserializer).runAsync
+
+    val requestId = repSocket.recv()
+    requestId.length should equal(8)
+    val msg = MockRequest.fromString(repSocket.recvStr())
+    msg.body.test should equal("yey")
+    Thread.sleep(3000)
+    repSocket.send(requestId, ZMQ.SNDMORE)
+    repSocket.send(response.serializeToString)
+    f.futureValue should equal(response)
+
+    repSocket.close()
+    ctx.close()
+  }
+
+  it should "timeout if response took more than ask ttl" in {
+    port += 1
+
+    val ctx = ZMQ.context(1)
+    val response = MockResponse(MockBody("got-you"))
+
+    val clientTransport = new ZMQClient(
+      mockResolver,
+      defaultPort = port,
+      zmqIOThreadCount = 1,
+      askTimeout = 1.second,
+      keepAliveTimeout = 2.second,
+      maxSockets = 150,
+      maxOutputQueueSize = 10
+    )
+
+    val repSocket = ctx.socket(ZMQ.REP)
+    repSocket.setLinger(1000)
+    repSocket.bind(s"tcp://*:$port")
+
+    val f = clientTransport.ask(MockRequest(MockBody("yey")), responseDeserializer).runAsync
+
+    val requestId = repSocket.recv()
+    requestId.length should equal(8)
+    val msg = MockRequest.fromString(repSocket.recvStr())
+    msg.body.test should equal("yey")
+    Thread.sleep(3000)
+    repSocket.send(requestId, ZMQ.SNDMORE)
+    repSocket.send(response.serializeToString)
+    f.failed.futureValue shouldBe a[GatewayTimeout[_]]
+
+    repSocket.close()
+    ctx.close()
+  }
 }
