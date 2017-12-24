@@ -24,27 +24,26 @@ trait ZMQCommandsConsumer[C] {
   protected def logger: Logger
 
   protected def fetchNewCommands(commandSource: Pipe.SourceChannel): Seq[C] = {
-    val newCommands = mutable.MutableList[C]()
-    var command: Option[C] = None
-    var commandCount = 0
-    do {
-      command = Option(commandsQueue.poll())
-      command.foreach { c ⇒
-        commandCount += 1
-        newCommands += c
-      }
-    } while(command.isDefined)
-
+    val MAX_COUNT=1024
+    val buffer = ByteBuffer.allocateDirect(MAX_COUNT)
+    val commandCount = commandSource.read(buffer)
     if (commandCount > 0) {
-      val buffer = ByteBuffer.allocateDirect(commandCount)
-      commandSource.read(buffer)
+      val commands = mutable.MutableList[C]()
+      for (i ← 0 until commandCount) {
+        commands += commandsQueue.poll()
+      }
+      commands
+    } else {
+      Seq.empty[C]
     }
-    newCommands
   }
 
   protected def sendCommand(command: C): Unit = {
+    val hash = (command.hashCode() % 0xFF).toByte
+    val array = Array[Byte](hash)
+    val buf = ByteBuffer.wrap(array)
     commandsQueue.add(command)
-    commandsSink.write(ByteBuffer.wrap(Array[Byte](0)))
+    commandsSink.write(buf)
   }
 
   protected def close(): Unit = {
